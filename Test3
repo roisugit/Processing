@@ -1,12 +1,13 @@
 options(stringsAsFactors = FALSE)
 
 # =========================================================
-# STRING GO BP BAR PLOTS WITH PREFERRED-NAME DOTS
+# STRING GO BP BAR PLOTS + GENE TABLE OUTPUT
 #
 # - Reads UP_sig.csv and DOWN_sig.csv from comparison folders
 # - Runs STRING enrichment for GO Biological Process
-# - Uses preferredNames from get_enrichment() for gene dots
-# - Overlays dots and labels on bars
+# - Uses preferredNames from get_enrichment() for gene membership
+# - Plots bars only
+# - Saves gene memberships for each bar as CSV
 # - Builds 1-row faceted plot with panels side-by-side
 # - DOWN panels are labeled "_inverse"
 # - Publication labels can be customized at bottom
@@ -175,7 +176,7 @@ run_one_enrichment <- function(file_path, contrast_name, direction, string_db, g
   if (nrow(genes_df) == 0) {
     return(list(
       bars = data.frame(),
-      dots = data.frame(),
+      members = data.frame(),
       mapped = data.frame(),
       enrich = data.frame()
     ))
@@ -195,7 +196,7 @@ run_one_enrichment <- function(file_path, contrast_name, direction, string_db, g
     message("Mapping failed for ", contrast_name, " ", direction, ": ", conditionMessage(mapped))
     return(list(
       bars = data.frame(),
-      dots = data.frame(),
+      members = data.frame(),
       mapped = data.frame(),
       enrich = data.frame()
     ))
@@ -206,7 +207,7 @@ run_one_enrichment <- function(file_path, contrast_name, direction, string_db, g
   if (!"STRING_id" %in% names(mapped) || nrow(mapped) == 0) {
     return(list(
       bars = data.frame(),
-      dots = data.frame(),
+      members = data.frame(),
       mapped = mapped,
       enrich = data.frame()
     ))
@@ -221,7 +222,7 @@ run_one_enrichment <- function(file_path, contrast_name, direction, string_db, g
     message("Enrichment failed for ", contrast_name, " ", direction, ": ", conditionMessage(enrich_raw))
     return(list(
       bars = data.frame(),
-      dots = data.frame(),
+      members = data.frame(),
       mapped = mapped,
       enrich = data.frame()
     ))
@@ -233,7 +234,7 @@ run_one_enrichment <- function(file_path, contrast_name, direction, string_db, g
   if (nrow(go_terms) == 0) {
     return(list(
       bars = data.frame(),
-      dots = data.frame(),
+      members = data.frame(),
       mapped = mapped,
       enrich = enrich_std
     ))
@@ -248,44 +249,18 @@ run_one_enrichment <- function(file_path, contrast_name, direction, string_db, g
     stringsAsFactors = FALSE
   )
 
-  membership <- extract_term_gene_membership(go_terms)
+  members <- extract_term_gene_membership(go_terms)
 
-  if (nrow(membership) == 0) {
-    dots <- data.frame()
-  } else {
-    dots_list <- list()
-
-    for (term_name in unique(membership$term_std)) {
-      sub_mem <- membership[membership$term_std == term_name, , drop = FALSE]
-      sub_bar <- bars[bars$term_std == term_name, , drop = FALSE]
-
-      if (nrow(sub_mem) == 0 || nrow(sub_bar) == 0) next
-
-      score_val <- as.numeric(sub_bar$score_for_plot[1])
-      n_genes <- nrow(sub_mem)
-
-      dot_x <- if (n_genes == 1) {
-        score_val / 2
-      } else {
-        score_val * (seq_len(n_genes) / (n_genes + 1))
-      }
-
-      dots_list[[length(dots_list) + 1]] <- data.frame(
-        contrast = rep(as.character(contrast_name), n_genes),
-        direction = rep(as.character(direction), n_genes),
-        term_std = rep(as.character(term_name), n_genes),
-        gene = as.character(sub_mem$gene),
-        dot_x = as.numeric(dot_x),
-        stringsAsFactors = FALSE
-      )
-    }
-
-    dots <- if (length(dots_list) == 0) data.frame() else do.call(rbind, dots_list)
+  if (nrow(members) > 0) {
+    members$contrast <- contrast_name
+    members$direction <- direction
+    members <- members[, c("contrast", "direction", "term_std", "term_id_std", "gene")]
+    rownames(members) <- NULL
   }
 
   list(
     bars = bars,
-    dots = dots,
+    members = members,
     mapped = mapped,
     enrich = enrich_std
   )
@@ -335,7 +310,7 @@ contrasts <- sort(unique(c(
 # RUN
 # -------------------------
 all_bars <- list()
-all_dots <- list()
+all_members <- list()
 all_enrich <- list()
 mapping_summary <- list()
 
@@ -360,7 +335,7 @@ for (ctr in contrasts) {
     )
 
     all_bars[[length(all_bars) + 1]] <- up_res$bars
-    all_dots[[length(all_dots) + 1]] <- up_res$dots
+    all_members[[length(all_members) + 1]] <- up_res$members
 
     if (nrow(up_res$enrich) > 0) {
       tmp_enrich <- up_res$enrich
@@ -389,7 +364,7 @@ for (ctr in contrasts) {
     )
 
     all_bars[[length(all_bars) + 1]] <- down_res$bars
-    all_dots[[length(all_dots) + 1]] <- down_res$dots
+    all_members[[length(all_members) + 1]] <- down_res$members
 
     if (nrow(down_res$enrich) > 0) {
       tmp_enrich <- down_res$enrich
@@ -408,7 +383,7 @@ for (ctr in contrasts) {
 }
 
 bars_df <- if (length(all_bars) > 0) bind_rows(all_bars) else data.frame()
-dots_df <- if (length(all_dots) > 0) bind_rows(all_dots) else data.frame()
+members_df <- if (length(all_members) > 0) bind_rows(all_members) else data.frame()
 mapping_df <- if (length(mapping_summary) > 0) bind_rows(mapping_summary) else data.frame()
 enrich_df <- if (length(all_enrich) > 0) bind_rows(all_enrich) else data.frame()
 
@@ -435,49 +410,25 @@ bars_df$term_std <- as.character(bars_df$term_std)
 bars_df$term_id_std <- as.character(bars_df$term_id_std)
 bars_df$score_for_plot <- as.numeric(bars_df$score_for_plot)
 
-# Rename DOWN panels to _inverse
 bars_df$panel_name <- ifelse(
   bars_df$direction == "DOWN",
   paste0(bars_df$contrast, "_inverse"),
   bars_df$contrast
 )
 
-# preserve panel order as UP then inverse for each contrast
 panel_order <- as.vector(rbind(contrasts, paste0(contrasts, "_inverse")))
 panel_order <- panel_order[panel_order %in% unique(bars_df$panel_name)]
 
 bars_df$panel_name <- factor(bars_df$panel_name, levels = panel_order)
-
 bars_df$panel_term <- paste(as.character(bars_df$panel_name), bars_df$term_std, sep = "___")
 term_levels <- unique(bars_df$panel_term)
 bars_df$panel_term <- factor(bars_df$panel_term, levels = rev(term_levels))
-
-if (nrow(dots_df) > 0) {
-  dots_df <- as.data.frame(dots_df, stringsAsFactors = FALSE)
-  dots_df$contrast <- as.character(dots_df$contrast)
-  dots_df$direction <- as.character(dots_df$direction)
-  dots_df$term_std <- as.character(dots_df$term_std)
-  dots_df$gene <- as.character(dots_df$gene)
-  dots_df$dot_x <- as.numeric(dots_df$dot_x)
-
-  dots_df$panel_name <- ifelse(
-    dots_df$direction == "DOWN",
-    paste0(dots_df$contrast, "_inverse"),
-    dots_df$contrast
-  )
-  dots_df$panel_name <- factor(dots_df$panel_name, levels = panel_order)
-
-  dots_df$panel_term <- paste(as.character(dots_df$panel_name), dots_df$term_std, sep = "___")
-  dots_df$panel_term <- factor(dots_df$panel_term, levels = rev(term_levels))
-}
 
 label_map <- setNames(as.character(bars_df$term_std), as.character(bars_df$panel_term))
 
 # -------------------------
 # PUBLICATION LABELS
 # Edit this named vector as needed
-# left side = internal panel name
-# right side = display label
 # -------------------------
 publication_labels <- c(
   # "A_vs_B" = "A vs B",
@@ -493,28 +444,35 @@ if (length(publication_labels) > 0) {
 }
 
 # -------------------------
+# SAVE GENE MEMBERSHIP TABLE
+# -------------------------
+if (nrow(members_df) > 0) {
+  members_df <- as.data.frame(members_df, stringsAsFactors = FALSE)
+  members_df$contrast <- as.character(members_df$contrast)
+  members_df$direction <- as.character(members_df$direction)
+  members_df$term_std <- as.character(members_df$term_std)
+  members_df$term_id_std <- as.character(members_df$term_id_std)
+  members_df$gene <- as.character(members_df$gene)
+
+  members_df$panel_name <- ifelse(
+    members_df$direction == "DOWN",
+    paste0(members_df$contrast, "_inverse"),
+    members_df$contrast
+  )
+
+  members_df$panel_label <- panel_labels_used[as.character(members_df$panel_name)]
+
+  members_df <- members_df[, c(
+    "contrast", "direction", "panel_name", "panel_label",
+    "term_std", "term_id_std", "gene"
+  )]
+
+  write_csv(members_df, file.path(base_dir, "STRING_GO_BP_gene_membership_table.csv"))
+}
+
+# -------------------------
 # PLOT
 # -------------------------
-p <- ggplot(bars_df, aes(x = score_for_plot, y = panel_term)) +
-  geom_col(width = 0.7) +
-  facet_wrap(~ panel_name, nrow = 1, scales = "free_y") +
-  scale_y_discrete(labels = label_map) +
-  scale_x_continuous(expand = expansion(mult = c(0, 0.12))) +
-  labs(
-    title = "STRING GO Biological Process enrichment",
-    x = expression(-log[10]("significance")),
-    y = NULL
-  ) +
-  theme_bw() +
-  theme(
-    strip.background = element_rect(fill = "white"),
-    panel.grid.major.y = element_blank(),
-    axis.text.y = element_text(size = 8),
-    strip.text = element_text(size = 10)
-  ) +
-  labeller(panel_name = panel_labels_used)
-
-# facet_wrap labeller support via labels argument
 p <- ggplot(bars_df, aes(x = score_for_plot, y = panel_term)) +
   geom_col(width = 0.7) +
   facet_wrap(
@@ -524,7 +482,6 @@ p <- ggplot(bars_df, aes(x = score_for_plot, y = panel_term)) +
     labeller = as_labeller(panel_labels_used)
   ) +
   scale_y_discrete(labels = label_map) +
-  scale_x_continuous(expand = expansion(mult = c(0, 0.12))) +
   labs(
     title = "STRING GO Biological Process enrichment",
     x = expression(-log[10]("significance")),
@@ -538,29 +495,10 @@ p <- ggplot(bars_df, aes(x = score_for_plot, y = panel_term)) +
     strip.text = element_text(size = 10)
   )
 
-if (nrow(dots_df) > 0) {
-  p <- p +
-    geom_point(
-      data = dots_df,
-      aes(x = dot_x, y = panel_term),
-      inherit.aes = FALSE,
-      size = 1.8
-    ) +
-    geom_text(
-      data = dots_df,
-      aes(x = dot_x, y = panel_term, label = gene),
-      inherit.aes = FALSE,
-      size = 2.3,
-      hjust = 0.5,
-      vjust = -0.6,
-      check_overlap = TRUE
-    )
-}
-
 print(p)
 
 ggsave(
-  filename = file.path(base_dir, "STRING_GO_BP_side_by_side_preferredNames.png"),
+  filename = file.path(base_dir, "STRING_GO_BP_side_by_side_bars_only.png"),
   plot = p,
   width = max(16, length(panel_order) * 3.5),
   height = 8,
@@ -569,7 +507,3 @@ ggsave(
 )
 
 write_csv(bars_df, file.path(base_dir, "STRING_GO_BP_bar_data.csv"))
-
-if (nrow(dots_df) > 0) {
-  write_csv(dots_df, file.path(base_dir, "STRING_GO_BP_gene_overlay_data.csv"))
-}
