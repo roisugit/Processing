@@ -1,20 +1,7 @@
 # =========================================================
-# STRING GO BP FACETED BAR PLOTS WITH GENE LABEL OVERLAY
-#
-# For each comparison folder:
-#   - read UP_sig.csv and DOWN_sig.csv
-#   - run STRING enrichment separately
-#   - keep GO Biological Process terms
-#   - take top N terms
-#   - make one faceted plot:
-#       rows = comparison
-#       cols = direction (UP / DOWN)
-#   - overlay genes contributing to each GO term as labeled points
+# SAFE STRING GO BP FACETED BAR PLOT WITH GENE OVERLAY
 # =========================================================
 
-# -------------------------
-# Install packages if needed
-# -------------------------
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
 }
@@ -22,10 +9,7 @@ if (!requireNamespace("STRINGdb", quietly = TRUE)) {
   BiocManager::install("STRINGdb")
 }
 
-pkgs <- c(
-  "STRINGdb", "readr", "dplyr", "purrr",
-  "stringr", "ggplot2", "tibble", "tidyr", "forcats"
-)
+pkgs <- c("STRINGdb", "readr", "dplyr", "purrr", "stringr", "ggplot2", "tibble")
 to_install <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(to_install) > 0) install.packages(to_install)
 
@@ -36,19 +20,17 @@ library(purrr)
 library(stringr)
 library(ggplot2)
 library(tibble)
-library(tidyr)
-library(forcats)
 
 # -------------------------
 # USER SETTINGS
 # -------------------------
-base_dir <- "PATH/TO/YOUR/PARENT_DIRECTORY"   # change this
-species_id <- 9913                            # Bos taurus
+base_dir <- "PATH/TO/YOUR/PARENT_DIRECTORY"
+species_id <- 9913
 string_version <- "12.0"
 score_threshold <- 400
 top_n_terms <- 8
 
-# If manually downloaded STRING files, set this; else leave NULL
+# set this if using manually downloaded STRING files
 string_input_directory <- NULL
 
 gene_column_candidates <- c(
@@ -75,6 +57,18 @@ find_gene_column <- function(df, candidates) {
   stop("Could not identify a gene column. Available columns: ", paste(names(df), collapse = ", "))
 }
 
+read_gene_list <- function(file_path, gene_column_candidates) {
+  df <- read_csv(file_path, show_col_types = FALSE)
+  gene_col <- find_gene_column(df, gene_column_candidates)
+
+  tibble(
+    gene = as.character(df[[gene_col]])
+  ) %>%
+    mutate(gene = str_trim(gene)) %>%
+    filter(!is.na(gene), gene != "") %>%
+    distinct()
+}
+
 extract_go_gene_string <- function(df_row) {
   candidate_cols <- c(
     "preferredNames",
@@ -97,12 +91,330 @@ extract_go_gene_string <- function(df_row) {
 
 split_gene_membership <- function(x) {
   if (is.na(x) || x == "") return(character(0))
+  parts <- unlist(strsplit(x, "[,;]"))
+  parts <- trimws(parts)
+  unique(parts[parts != ""])
+}
 
-  x %>%
-    str_split("[,;]") %>%
-    .[[1]] %>%
-    str_trim() %>%
-    unique() %>%
+standardize_enrichment_df <- function(enrichment_df) {
+  if (is.null(enrichment_df) || nrow(enrichment_df) == 0) return(tibble())
+
+  df <- as_tibble(enrichment_df)
+
+  category_col <- choose_first_existing(names(df), c("category", "term_category", "source"))
+  term_col <- choose_first_existing(names(df), c("description", "term", "term_description"))
+  term_id_col <- choose_first_existing(names(df), c("term_id", "term", "id"))
+  fdr_col <- choose_first_existing(names(df), c("fdr", "FDR", "false_discovery_rate"))
+  p_col <- choose_first_existing(names(df), c("p_value", "pvalue", "p.value"))
+
+  if (is.na(category_col) || is.na(term_col)) return(tibble())
+
+  df %>%
+    mutate(
+      category_std = as.character(.data[[category_col]]),
+      term_std = as.character(.data[[term_col]]),
+      term_id_std = if (!is.na(term_id_col)) as.character(.data[[term_id_col]]) else term_std,
+      fdr_std = if (!is.na(fdr_col)) suppressWarnings(as.numeric(.data[[fdr_col]])) else NA_real_,
+      p_std = if (!is.na(p_col)) suppressWarnings(as.numeric(.data[[p_col]])) else NA_real_
+    ) %>%
+    mutate(
+      score_for_plot = dplyr::case_when(
+        !is.na(fdr_std) & fdr_std > 0 ~ -log10(fdr_std),
+        !is.na(p_std) & p_std > 0 ~ -log10(p_std),
+        TRUE ~ NA_real_
+      )
+    )
+}
+
+extract_go_bp_terms <- function(enrichment_std, top_n_terms) {
+  if (nrow(enrichment_std) == 0) return(tibble())
+
+  enrichment_std %>%
+    filter(str_detect(tolower(category_std), "process|biological process|gobp|go biological process")) %>%
+    filter(!is.na(score_for_plot)) %>%
+    arrange(desc(score_for_plot)) %>%
+    slice_head(n = top_n_terms)
+}
+
+extract_term_gene_membership <- function(go_terms_df) {
+  if (nrow(go_terms_df) == 0) return(tibble())
+
+  out <- lapply(seq_len(nrow(go_terms_df)), function(i) {
+    row_i <- go_terms_df[i, , drop = FALSE]
+    genes_str <- extract_go_gene_string(row_i)
+    genes <- split_gene_membership(genes_str)
+
+    if (length(genes) == 0) return(NULL)
+
+    tibble(
+      term_std = row_i$term_std[[1]],
+      term_id_std = row_i$term_id_std[[1]],
+      gene = genes
+    )
+  })
+
+  bind_rows(out) %>% distinct()
+}
+
+run_one_enrichment <- function(file_path, contrast_name, direction, string_db, gene_column_candidates, top_n_terms) {
+  genes_df <- read_gene_list(file_path, gene_column_candidates)
+
+  if (nrow(genes_df) == 0) {
+    return(list(bars = tibble(), dots = tibble(), mapped = tibble()))
+  }
+
+  map_input <- data.frame(
+    gene = genes_df$gene,
+    stringsAsFactors = FALSE
+  )
+
+  mapped <- tryCatch(
+    string_db$map(map_input, "gene", removeUnmappedRows = TRUE),
+    error = function(e) NULL
+  )
+
+  if (is.null(mapped)) {
+    return(list(bars = tibble(), dots = tibble(), mapped = tibble()))
+  }
+
+  mapped <- as.data.frame(mapped, stringsAsFactors = FALSE)
+
+  if (!"STRING_id" %in% names(mapped) || nrow(mapped) == 0) {
+    return(list(bars = tibble(), dots = tibble(), mapped = mapped))
+  }
+
+  enrich_raw <- tryCatch(
+    string_db$get_enrichment(unique(mapped$STRING_id)),
+    error = function(e) NULL
+  )
+
+  enrich_std <- standardize_enrichment_df(enrich_raw)
+  go_terms <- extract_go_bp_terms(enrich_std, top_n_terms)
+
+  if (nrow(go_terms) == 0) {
+    return(list(bars = tibble(), dots = tibble(), mapped = mapped))
+  }
+
+  bars <- go_terms %>%
+    transmute(
+      contrast = as.character(contrast_name),
+      direction = as.character(direction),
+      term_std = as.character(term_std),
+      term_id_std = as.character(term_id_std),
+      score_for_plot = as.numeric(score_for_plot)
+    )
+
+  membership <- extract_term_gene_membership(go_terms)
+
+  if (nrow(membership) == 0) {
+    dots <- tibble()
+  } else {
+    dots <- membership %>%
+      semi_join(mapped %>% distinct(gene), by = "gene") %>%
+      left_join(
+        bars %>% select(contrast, direction, term_std, score_for_plot),
+        by = "term_std"
+      ) %>%
+      group_by(contrast, direction, term_std) %>%
+      mutate(
+        gene_index = dplyr::row_number(),
+        n_genes = dplyr::n(),
+        dot_x = as.numeric(ifelse(
+          n_genes == 1,
+          score_for_plot / 2,
+          score_for_plot * (gene_index / (n_genes + 1))
+        ))
+      ) %>%
+      ungroup()
+  }
+
+  list(
+    bars = bars,
+    dots = dots,
+    mapped = mapped
+  )
+}
+
+# -------------------------
+# INIT STRING
+# -------------------------
+if (is.null(string_input_directory)) {
+  string_db <- STRINGdb$new(
+    version = string_version,
+    species = species_id,
+    score_threshold = score_threshold
+  )
+} else {
+  string_db <- STRINGdb$new(
+    version = string_version,
+    species = species_id,
+    score_threshold = score_threshold,
+    input_directory = string_input_directory
+  )
+}
+
+# -------------------------
+# FIND FILES
+# -------------------------
+up_files <- list.files(
+  path = base_dir,
+  pattern = "^UP_sig\\.csv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+down_files <- list.files(
+  path = base_dir,
+  pattern = "^DOWN_sig\\.csv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+contrasts <- sort(unique(c(
+  basename(dirname(up_files)),
+  basename(dirname(down_files))
+)))
+
+# -------------------------
+# RUN
+# -------------------------
+all_bars <- list()
+all_dots <- list()
+mapping_summary <- list()
+
+for (ctr in contrasts) {
+  message("Processing: ", ctr)
+
+  up_match <- up_files[basename(dirname(up_files)) == ctr]
+  down_match <- down_files[basename(dirname(down_files)) == ctr]
+
+  up_file <- if (length(up_match) >= 1) up_match[1] else NA_character_
+  down_file <- if (length(down_match) >= 1) down_match[1] else NA_character_
+
+  if (!is.na(up_file) && file.exists(up_file)) {
+    up_res <- run_one_enrichment(
+      file_path = up_file,
+      contrast_name = ctr,
+      direction = "UP",
+      string_db = string_db,
+      gene_column_candidates = gene_column_candidates,
+      top_n_terms = top_n_terms
+    )
+    all_bars[[length(all_bars) + 1]] <- up_res$bars
+    all_dots[[length(all_dots) + 1]] <- up_res$dots
+    mapping_summary[[length(mapping_summary) + 1]] <- tibble(
+      contrast = ctr,
+      direction = "UP",
+      input_genes = nrow(read_gene_list(up_file, gene_column_candidates)),
+      mapped_genes = nrow(up_res$mapped)
+    )
+  }
+
+  if (!is.na(down_file) && file.exists(down_file)) {
+    down_res <- run_one_enrichment(
+      file_path = down_file,
+      contrast_name = ctr,
+      direction = "DOWN",
+      string_db = string_db,
+      gene_column_candidates = gene_column_candidates,
+      top_n_terms = top_n_terms
+    )
+    all_bars[[length(all_bars) + 1]] <- down_res$bars
+    all_dots[[length(all_dots) + 1]] <- down_res$dots
+    mapping_summary[[length(mapping_summary) + 1]] <- tibble(
+      contrast = ctr,
+      direction = "DOWN",
+      input_genes = nrow(read_gene_list(down_file, gene_column_candidates)),
+      mapped_genes = nrow(down_res$mapped)
+    )
+  }
+}
+
+bars_df <- bind_rows(all_bars)
+dots_df <- bind_rows(all_dots)
+mapping_df <- bind_rows(mapping_summary)
+
+if (nrow(bars_df) == 0) {
+  stop("No GO BP enrichment results were found.")
+}
+
+# -------------------------
+# BUILD NUMERIC Y POSITIONS
+# -------------------------
+bars_df <- bars_df %>%
+  group_by(contrast, direction) %>%
+  arrange(score_for_plot) %>%
+  mutate(y = seq_len(n())) %>%
+  ungroup()
+
+y_label_df <- bars_df %>%
+  select(contrast, direction, y, term_std)
+
+if (nrow(dots_df) > 0) {
+  dots_df <- dots_df %>%
+    left_join(
+      bars_df %>% select(contrast, direction, term_std, y),
+      by = c("contrast", "direction", "term_std")
+    )
+}
+
+# -------------------------
+# PLOT
+# -------------------------
+p <- ggplot(bars_df, aes(x = score_for_plot, y = y)) +
+  geom_col(width = 0.7) +
+  facet_grid(contrast ~ direction, scales = "free_y", space = "free_y") +
+  scale_y_continuous(
+    breaks = y_label_df$y,
+    labels = y_label_df$term_std
+  ) +
+  labs(
+    title = "STRING GO Biological Process enrichment by contrast",
+    x = expression(-log[10]("significance")),
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    strip.background = element_rect(fill = "white"),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 8)
+  )
+
+if (nrow(dots_df) > 0 && all(c("dot_x", "y", "gene") %in% names(dots_df))) {
+  p <- p +
+    geom_point(
+      data = dots_df,
+      aes(x = dot_x, y = y),
+      inherit.aes = FALSE,
+      size = 2
+    ) +
+    geom_text(
+      data = dots_df,
+      aes(x = dot_x, y = y, label = gene),
+      inherit.aes = FALSE,
+      size = 2.4,
+      hjust = 0,
+      nudge_x = 0.12,
+      check_overlap = TRUE
+    )
+}
+
+print(p)
+
+ggsave(
+  filename = file.path(base_dir, "STRING_GO_BP_by_contrast_UP_DOWN_panels.png"),
+  plot = p,
+  width = 16,
+  height = max(8, length(unique(bars_df$contrast)) * 3),
+  dpi = 300,
+  bg = "white"
+)
+
+write_csv(bars_df, file.path(base_dir, "STRING_GO_BP_bar_data.csv"))
+write_csv(mapping_df, file.path(base_dir, "STRING_mapping_summary.csv"))
+if (nrow(dots_df) > 0) {
+  write_csv(dots_df, file.path(base_dir, "STRING_GO_BP_gene_overlay_data.csv"))
+}    unique() %>%
     discard(~ .x == "")
 }
 
