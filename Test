@@ -1,22 +1,33 @@
-# =========================
-# Combine multiple *_sig.csv files and run STRING
-# Makes:
-#   1) STRING-style network input/summary
-#   2) Local network plot colored by source file
-#   3) One set for UP_sig.csv and one set for DOWN_sig.csv
-# =========================
+# =========================================================
+# COMBINE ALL UP_sig.csv AND DOWN_sig.csv FILES
+# RUN EACH SET THROUGH STRING
+# MAKE:
+#   1) a combined interaction plot for UP
+#   2) a combined interaction plot for DOWN
+#   3) a version colored by which file each gene came from
+#   4) output tables for nodes, edges, mapped/unmapped genes
+# =========================================================
 
-# ---- install if needed ----
+# -------------------------
+# Install packages if needed
+# -------------------------
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
 }
+
 if (!requireNamespace("STRINGdb", quietly = TRUE)) {
   BiocManager::install("STRINGdb")
 }
-pkgs <- c("STRINGdb", "dplyr", "readr", "purrr", "stringr", "igraph", "ggraph", "ggplot2", "tidyr")
-to_install <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
-if (length(to_install) > 0) install.packages(to_install)
 
+cran_pkgs <- c("dplyr", "readr", "purrr", "stringr", "igraph", "ggraph", "ggplot2", "tibble")
+to_install <- cran_pkgs[!vapply(cran_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(to_install) > 0) {
+  install.packages(to_install)
+}
+
+# -------------------------
+# Load libraries
+# -------------------------
 library(STRINGdb)
 library(dplyr)
 library(readr)
@@ -25,32 +36,45 @@ library(stringr)
 library(igraph)
 library(ggraph)
 library(ggplot2)
-library(tidyr)
+library(tibble)
 
 # =========================
 # USER SETTINGS
 # =========================
-base_dir <- "PATH/TO/YOUR/PARENT_DIRECTORY"   # change this
-species_id <- 9606                            # human; mouse = 10090, rat = 10116, etc.
-score_threshold <- 400                        # STRING confidence threshold
-gene_column_candidates <- c("gene", "Gene", "symbol", "SYMBOL", "GeneSymbol", "genes")
+base_dir <- "PATH/TO/YOUR/PARENT_DIRECTORY"   # <- CHANGE THIS
+species_id <- 9913                            # Bos taurus
+score_threshold <- 400
+string_version <- "12.0"
+
+# Candidate gene column names in your CSVs
+gene_column_candidates <- c(
+  "gene", "Gene", "symbol", "SYMBOL", "GeneSymbol",
+  "genes", "external_gene_name", "hgnc_symbol"
+)
+
 output_dir <- file.path(base_dir, "STRING_combined_results")
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 # =========================
-# HELPERS
+# HELPER FUNCTIONS
 # =========================
 
 find_gene_column <- function(df, candidates) {
-  hit <- intersect(candidates, names(df))
-  if (length(hit) > 0) return(hit[1])
+  hits <- intersect(candidates, names(df))
+  if (length(hits) > 0) {
+    return(hits[1])
+  }
 
   # fallback: first character/factor column
-  char_cols <- names(df)[vapply(df, function(x) is.character(x) || is.factor(x), logical(1))]
-  if (length(char_cols) > 0) return(char_cols[1])
+  text_cols <- names(df)[vapply(df, function(x) is.character(x) || is.factor(x), logical(1))]
+  if (length(text_cols) > 0) {
+    return(text_cols[1])
+  }
 
-  stop("Could not find a gene column. Available columns: ",
-       paste(names(df), collapse = ", "))
+  stop(
+    "Could not identify a gene column. Available columns are: ",
+    paste(names(df), collapse = ", ")
+  )
 }
 
 read_sig_files <- function(base_dir, pattern, gene_column_candidates) {
@@ -62,20 +86,22 @@ read_sig_files <- function(base_dir, pattern, gene_column_candidates) {
   )
 
   if (length(files) == 0) {
-    warning("No files found for pattern: ", pattern)
-    return(list(files = character(), combined = tibble()))
+    warning("No files found matching pattern: ", pattern)
+    return(list(files = character(0), combined = tibble()))
   }
 
-  combined <- map_dfr(files, function(f) {
-    df <- read_csv(f, show_col_types = FALSE)
+  combined <- purrr::map_dfr(files, function(f) {
+    message("Reading: ", f)
+
+    df <- readr::read_csv(f, show_col_types = FALSE)
     gene_col <- find_gene_column(df, gene_column_candidates)
 
     tibble(
       source_file = basename(f),
       source_path = f,
-      gene = df[[gene_col]] |> as.character()
-    ) |>
-      mutate(gene = str_trim(gene)) |>
+      gene = as.character(df[[gene_col]])
+    ) %>%
+      mutate(gene = str_trim(gene)) %>%
       filter(!is.na(gene), gene != "")
   })
 
@@ -83,26 +109,281 @@ read_sig_files <- function(base_dir, pattern, gene_column_candidates) {
 }
 
 collapse_sources <- function(df) {
-  df |>
-    distinct(gene, source_file) |>
-    group_by(gene) |>
+  out <- df %>%
+    distinct(gene, source_file) %>%
+    group_by(gene) %>%
     summarise(
       source_files = paste(sort(unique(source_file)), collapse = "; "),
       n_files = n_distinct(source_file),
       .groups = "drop"
     )
+
+  # IMPORTANT: convert to plain base data.frame for STRINGdb::map()
+  data.frame(
+    gene = as.character(out$gene),
+    source_files = as.character(out$source_files),
+    n_files = as.integer(out$n_files),
+    stringsAsFactors = FALSE
+  )
+}
+
+make_string_safe_df <- function(source_lookup_df) {
+  out <- data.frame(
+    gene = as.character(source_lookup_df$gene),
+    source_files = as.character(source_lookup_df$source_files),
+    n_files = as.integer(source_lookup_df$n_files),
+    stringsAsFactors = FALSE
+  )
+
+  out <- out[
+    !is.na(out$gene) & trimws(out$gene) != "",
+    ,
+    drop = FALSE
+  ]
+
+  out
 }
 
 run_string_for_set <- function(sig_df, label, string_db, output_dir) {
+  message("========================================")
+  message("Running STRING for: ", label)
+  message("Input rows: ", nrow(sig_df))
+
   if (nrow(sig_df) == 0) {
-    message("No rows for ", label)
+    warning("No rows found for ", label)
     return(NULL)
   }
 
+  # collapse duplicates while retaining file provenance
   source_lookup <- collapse_sources(sig_df)
+  source_lookup_for_map <- make_string_safe_df(source_lookup)
 
+  message("Unique genes before mapping: ", nrow(source_lookup_for_map))
+
+  # helpful debug output
+  print(class(source_lookup_for_map))
+  print(names(source_lookup_for_map))
+  str(source_lookup_for_map)
+
+  # map genes to STRING IDs
   mapped <- string_db$map(
-    source_lookup,
+    source_lookup_for_map,
+    "gene",
+    removeUnmappedRows = FALSE
+  )
+
+  mapped <- as.data.frame(mapped, stringsAsFactors = FALSE)
+
+  mapped_clean <- mapped %>%
+    filter(!is.na(STRING_id)) %>%
+    distinct(STRING_id, .keep_all = TRUE)
+
+  unmapped <- mapped %>%
+    filter(is.na(STRING_id))
+
+  # save mapping tables
+  write_csv(as_tibble(mapped), file.path(output_dir, paste0(label, "_mapped_genes.csv")))
+  write_csv(as_tibble(unmapped), file.path(output_dir, paste0(label, "_unmapped_genes.csv")))
+
+  message("Mapped genes: ", nrow(mapped_clean))
+  message("Unmapped genes: ", nrow(unmapped))
+
+  if (nrow(mapped_clean) < 2) {
+    warning("Not enough mapped genes for ", label, " to make a network.")
+    return(list(
+      mapped = mapped,
+      mapped_clean = mapped_clean,
+      unmapped = unmapped,
+      nodes = NULL,
+      edges = NULL,
+      graph = NULL
+    ))
+  }
+
+  hits <- mapped_clean$STRING_id
+
+  # get interactions from STRING
+  edges <- string_db$get_interactions(hits)
+
+  if (is.null(edges) || nrow(edges) == 0) {
+    warning("No interactions returned for ", label)
+
+    nodes_only <- mapped_clean %>%
+      transmute(
+        STRING_id = STRING_id,
+        gene = gene,
+        source_files = source_files,
+        n_files = n_files,
+        source_group = ifelse(n_files > 1, "Multiple", source_files)
+      )
+
+    write_csv(nodes_only, file.path(output_dir, paste0(label, "_nodes.csv")))
+
+    return(list(
+      mapped = mapped,
+      mapped_clean = mapped_clean,
+      unmapped = unmapped,
+      nodes = nodes_only,
+      edges = NULL,
+      graph = NULL
+    ))
+  }
+
+  edges <- as.data.frame(edges, stringsAsFactors = FALSE)
+
+  # STRINGdb usually returns columns named "from" and "to"
+  # but this is a defensive fallback
+  edge_names <- names(edges)
+
+  if (!all(c("from", "to") %in% edge_names)) {
+    from_col <- edge_names[grepl("from|protein1|stringId_A|preferredName_A", edge_names, ignore.case = TRUE)][1]
+    to_col   <- edge_names[grepl("to|protein2|stringId_B|preferredName_B", edge_names, ignore.case = TRUE)][1]
+
+    if (is.na(from_col) || is.na(to_col)) {
+      stop("Could not identify edge columns in STRING interaction output.")
+    }
+
+    names(edges)[names(edges) == from_col] <- "from"
+    names(edges)[names(edges) == to_col] <- "to"
+  }
+
+  # keep only interactions between mapped hits
+  edges2 <- edges %>%
+    filter(from %in% hits, to %in% hits)
+
+  if (nrow(edges2) == 0) {
+    warning("STRING returned interactions, but none remained after filtering for input hits.")
+  }
+
+  # build node table
+  nodes <- tibble(
+    STRING_id = unique(c(edges2$from, edges2$to))
+  ) %>%
+    left_join(
+      mapped_clean %>%
+        transmute(
+          STRING_id,
+          gene = gene,
+          source_files = source_files,
+          n_files = n_files
+        ),
+      by = "STRING_id"
+    ) %>%
+    mutate(
+      gene = ifelse(is.na(gene), STRING_id, gene),
+      source_files = ifelse(is.na(source_files), "Unknown", source_files),
+      n_files = ifelse(is.na(n_files), 0L, n_files),
+      source_group = ifelse(n_files > 1, "Multiple", source_files)
+    )
+
+  # save node/edge tables
+  write_csv(nodes, file.path(output_dir, paste0(label, "_nodes.csv")))
+  write_csv(as_tibble(edges2), file.path(output_dir, paste0(label, "_edges.csv")))
+
+  # build graph
+  g <- graph_from_data_frame(
+    d = edges2 %>% select(from, to),
+    vertices = nodes,
+    directed = FALSE
+  )
+
+  # -------------------------
+  # Plot 1: combined network
+  # -------------------------
+  p1 <- ggraph(g, layout = "fr") +
+    geom_edge_link(alpha = 0.25) +
+    geom_node_point(size = 4) +
+    geom_node_text(aes(label = gene), repel = TRUE, size = 3) +
+    ggtitle(paste0(label, ": combined STRING interaction network")) +
+    theme_void()
+
+  ggsave(
+    filename = file.path(output_dir, paste0(label, "_combined_network.png")),
+    plot = p1,
+    width = 12,
+    height = 10,
+    dpi = 300
+  )
+
+  # -------------------------
+  # Plot 2: color by source file
+  # -------------------------
+  p2 <- ggraph(g, layout = "fr") +
+    geom_edge_link(alpha = 0.20) +
+    geom_node_point(aes(color = source_group), size = 4) +
+    geom_node_text(aes(label = gene), repel = TRUE, size = 3) +
+    ggtitle(paste0(label, ": nodes colored by source file")) +
+    theme_void()
+
+  ggsave(
+    filename = file.path(output_dir, paste0(label, "_colored_by_file.png")),
+    plot = p2,
+    width = 14,
+    height = 11,
+    dpi = 300
+  )
+
+  # save color legend values
+  legend_df <- nodes %>%
+    distinct(source_group) %>%
+    arrange(source_group)
+
+  write_csv(legend_df, file.path(output_dir, paste0(label, "_file_groups.csv")))
+
+  return(list(
+    mapped = mapped,
+    mapped_clean = mapped_clean,
+    unmapped = unmapped,
+    nodes = nodes,
+    edges = edges2,
+    graph = g
+  ))
+}
+
+# =========================
+# INITIALIZE STRING
+# =========================
+string_db <- STRINGdb$new(
+  version = string_version,
+  species = species_id,
+  score_threshold = score_threshold
+)
+
+# =========================
+# RUN UP
+# =========================
+up_data <- read_sig_files(
+  base_dir = base_dir,
+  pattern = "^UP_sig\\.csv$",
+  gene_column_candidates = gene_column_candidates
+)
+
+up_result <- run_string_for_set(
+  sig_df = up_data$combined,
+  label = "UP",
+  string_db = string_db,
+  output_dir = output_dir
+)
+
+# =========================
+# RUN DOWN
+# =========================
+down_data <- read_sig_files(
+  base_dir = base_dir,
+  pattern = "^DOWN_sig\\.csv$",
+  gene_column_candidates = gene_column_candidates
+)
+
+down_result <- run_string_for_set(
+  sig_df = down_data$combined,
+  label = "DOWN",
+  string_db = string_db,
+  output_dir = output_dir
+)
+
+message("========================================")
+message("Done.")
+message("Results saved in: ", output_dir)    source_lookup,
     "gene",
     removeUnmappedRows = FALSE
   )
