@@ -1,3 +1,60 @@
+
+# -------------------------
+# PLOT - SHARED Y-AXIS ACROSS ALL PANELS
+# -------------------------
+max_x <- max(bars_df$score_for_plot, na.rm = TRUE)
+
+# --- Global term ordering (most significant term at the top of every panel) ---
+term_order <- bars_df %>%
+  group_by(term_std) %>%
+  summarize(max_score = max(score_for_plot, na.rm = TRUE)) %>%
+  arrange(desc(max_score)) %>%
+  pull(term_std)
+
+bars_df$term_std <- factor(
+  bars_df$term_std,
+  levels = rev(term_order)   # reverse so highest score is at the top
+)
+
+p <- ggplot(bars_df, aes(x = score_for_plot, y = term_std)) +
+  geom_col(width = 0.7) +
+  facet_wrap(
+    ~ panel_name,
+    nrow = 1,
+    scales = "fixed",          # <-- SHARED y-axis (same terms & scale in every panel)
+    labeller = as_labeller(panel_labels_used)
+  ) +
+  scale_x_continuous(
+    limits = c(0, max_x * 1.05),
+    expand = c(0, 0)
+  ) +
+  labs(
+    title = "STRING GO Biological Process enrichment",
+    x = expression(-log[10]("significance")),
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    strip.background = element_rect(fill = "white"),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 8),
+    axis.ticks.y = element_line(),
+    strip.text = element_text(size = 10)
+  )
+
+print(p)
+
+ggsave(
+  filename = file.path(base_dir, "STRING_GO_BP_side_by_side_bars_only.png"),
+  plot = p,
+  width = max(16, length(panel_order) * 3.5),
+  height = max(8, length(term_order) * 0.35),   # height based on total unique terms
+  dpi = 300,
+  bg = "white"
+)
+
+
+
 # -------------------------
 # PLOT
 # -------------------------
