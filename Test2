@@ -1,0 +1,812 @@
+# =========================================================
+# COMBINE ALL UP_sig.csv AND DOWN_sig.csv FILES
+# RUN EACH SET THROUGH STRING
+# MAKE, FOR BOTH UP AND DOWN:
+#   1) combined interaction network plot
+#   2) comparison ring plot (folder names)
+#   3) cluster-colored network plot
+#   4) top hub genes plot
+#   5) edge confidence histogram
+#   6) cluster-by-comparison heatmap
+#   7) enrichment bar plots (GO BP / KEGG / Reactome when available)
+#   8) output tables for nodes, edges, mapped/unmapped genes, hubs, stats, enrichment
+# =========================================================
+
+# -------------------------
+# Install packages if needed
+# -------------------------
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+if (!requireNamespace("STRINGdb", quietly = TRUE)) {
+  BiocManager::install("STRINGdb")
+}
+
+cran_pkgs <- c(
+  "dplyr", "readr", "purrr", "stringr", "igraph", "ggraph",
+  "ggplot2", "tibble", "tidyr", "forcats", "scales"
+)
+
+to_install <- cran_pkgs[!vapply(cran_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(to_install) > 0) {
+  install.packages(to_install)
+}
+
+# -------------------------
+# Load libraries
+# -------------------------
+library(STRINGdb)
+library(dplyr)
+library(readr)
+library(purrr)
+library(stringr)
+library(igraph)
+library(ggraph)
+library(ggplot2)
+library(tibble)
+library(tidyr)
+library(forcats)
+library(scales)
+
+# =========================
+# USER SETTINGS
+# =========================
+base_dir <- "PATH/TO/YOUR/PARENT_DIRECTORY"   # <- CHANGE THIS
+species_id <- 9913                            # Bos taurus
+score_threshold <- 400
+string_version <- "12.0"
+
+# If you downloaded STRING manually, set this to the parent folder
+# containing the STRING files. Otherwise leave as NULL.
+# Example: string_input_directory <- "/your/path/STRING_db"
+string_input_directory <- NULL
+
+# Candidate gene column names in your CSVs
+gene_column_candidates <- c(
+  "gene", "Gene", "symbol", "SYMBOL", "GeneSymbol",
+  "genes", "external_gene_name", "hgnc_symbol"
+)
+
+# How many top items to show in certain plots
+top_n_hubs <- 20
+top_n_enrichment <- 10
+
+output_dir <- file.path(base_dir, "STRING_combined_results")
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# =========================
+# HELPER FUNCTIONS
+# =========================
+
+choose_first_existing <- function(x, candidates) {
+  hit <- intersect(candidates, x)
+  if (length(hit) == 0) return(NA_character_)
+  hit[1]
+}
+
+find_gene_column <- function(df, candidates) {
+  hits <- intersect(candidates, names(df))
+  if (length(hits) > 0) {
+    return(hits[1])
+  }
+
+  text_cols <- names(df)[vapply(df, function(x) is.character(x) || is.factor(x), logical(1))]
+  if (length(text_cols) > 0) {
+    return(text_cols[1])
+  }
+
+  stop(
+    "Could not identify a gene column. Available columns are: ",
+    paste(names(df), collapse = ", ")
+  )
+}
+
+read_sig_files <- function(base_dir, pattern, gene_column_candidates) {
+  files <- list.files(
+    path = base_dir,
+    pattern = pattern,
+    recursive = TRUE,
+    full.names = TRUE
+  )
+
+  if (length(files) == 0) {
+    warning("No files found matching pattern: ", pattern)
+    return(list(files = character(0), combined = tibble()))
+  }
+
+  combined <- purrr::map_dfr(files, function(f) {
+    message("Reading: ", f)
+
+    df <- readr::read_csv(f, show_col_types = FALSE)
+    gene_col <- find_gene_column(df, gene_column_candidates)
+
+    tibble(
+      comparison = basename(dirname(f)),
+      source_path = f,
+      gene = as.character(df[[gene_col]])
+    ) %>%
+      mutate(gene = str_trim(gene)) %>%
+      filter(!is.na(gene), gene != "")
+  })
+
+  list(files = files, combined = combined)
+}
+
+collapse_sources <- function(df) {
+  out <- df %>%
+    distinct(gene, comparison) %>%
+    group_by(gene) %>%
+    summarise(
+      comparisons = paste(sort(unique(comparison)), collapse = "; "),
+      n_comparisons = n_distinct(comparison),
+      .groups = "drop"
+    )
+
+  data.frame(
+    gene = as.character(out$gene),
+    comparisons = as.character(out$comparisons),
+    n_comparisons = as.integer(out$n_comparisons),
+    stringsAsFactors = FALSE
+  )
+}
+
+make_string_safe_df <- function(source_lookup_df) {
+  out <- data.frame(
+    gene = as.character(source_lookup_df$gene),
+    comparisons = as.character(source_lookup_df$comparisons),
+    n_comparisons = as.integer(source_lookup_df$n_comparisons),
+    stringsAsFactors = FALSE
+  )
+
+  out <- out[
+    !is.na(out$gene) & trimws(out$gene) != "",
+    ,
+    drop = FALSE
+  ]
+
+  out
+}
+
+make_network_stats <- function(g, label) {
+  if (is.null(g)) {
+    return(tibble(
+      set = label,
+      metric = character(),
+      value = numeric()
+    ))
+  }
+
+  tibble(
+    set = label,
+    metric = c(
+      "nodes",
+      "edges",
+      "connected_components",
+      "largest_component_nodes",
+      "average_degree",
+      "edge_density",
+      "transitivity_global",
+      "average_path_length_lcc"
+    ),
+    value = c(
+      igraph::vcount(g),
+      igraph::ecount(g),
+      igraph::components(g)$no,
+      max(igraph::components(g)$csize),
+      mean(igraph::degree(g)),
+      igraph::edge_density(g, loops = FALSE),
+      suppressWarnings(igraph::transitivity(g, type = "global")),
+      {
+        comp <- igraph::components(g)
+        giant_members <- which(comp$membership == which.max(comp$csize))
+        g_lcc <- induced_subgraph(g, giant_members)
+        if (vcount(g_lcc) > 1) suppressWarnings(mean_distance(g_lcc, directed = FALSE)) else NA_real_
+      }
+    )
+  )
+}
+
+extract_score_column <- function(edges_df) {
+  choose_first_existing(
+    names(edges_df),
+    c("combined_score", "score", "combinedScore")
+  )
+}
+
+extract_evidence_columns <- function(edges_df) {
+  possible <- c(
+    "neighborhood", "fusion", "cooccurence", "cooccurrence",
+    "homology", "coexpression", "experimental", "database", "textmining"
+  )
+  intersect(possible, names(edges_df))
+}
+
+standardize_enrichment_df <- function(enrichment_df) {
+  if (is.null(enrichment_df) || nrow(enrichment_df) == 0) {
+    return(tibble())
+  }
+
+  df <- as_tibble(enrichment_df)
+
+  category_col <- choose_first_existing(names(df), c("category", "term_category", "source"))
+  term_col <- choose_first_existing(names(df), c("description", "term", "term_description", "preferredNames"))
+  fdr_col <- choose_first_existing(names(df), c("fdr", "FDR", "false_discovery_rate"))
+  p_col <- choose_first_existing(names(df), c("p_value", "pvalue", "p.value"))
+  count_col <- choose_first_existing(names(df), c("number_of_genes", "count", "term_size_input", "observed_gene_count"))
+
+  if (is.na(category_col) || is.na(term_col)) {
+    return(df)
+  }
+
+  df %>%
+    mutate(
+      category_std = .data[[category_col]],
+      term_std = .data[[term_col]],
+      fdr_std = if (!is.na(fdr_col)) suppressWarnings(as.numeric(.data[[fdr_col]])) else NA_real_,
+      p_std = if (!is.na(p_col)) suppressWarnings(as.numeric(.data[[p_col]])) else NA_real_,
+      count_std = if (!is.na(count_col)) suppressWarnings(as.numeric(.data[[count_col]])) else NA_real_
+    ) %>%
+    mutate(
+      score_for_plot = case_when(
+        !is.na(fdr_std) & fdr_std > 0 ~ -log10(fdr_std),
+        !is.na(p_std) & p_std > 0 ~ -log10(p_std),
+        TRUE ~ NA_real_
+      )
+    )
+}
+
+plot_enrichment_category <- function(enrichment_std, label, output_dir, category_patterns, plot_suffix, plot_title) {
+  if (nrow(enrichment_std) == 0) return(invisible(NULL))
+
+  pattern <- paste(category_patterns, collapse = "|")
+
+  df <- enrichment_std %>%
+    filter(str_detect(tolower(category_std), pattern)) %>%
+    filter(!is.na(score_for_plot)) %>%
+    arrange(desc(score_for_plot)) %>%
+    slice_head(n = top_n_enrichment)
+
+  if (nrow(df) == 0) return(invisible(NULL))
+
+  p <- ggplot(
+    df %>% mutate(term_std = forcats::fct_reorder(term_std, score_for_plot)),
+    aes(x = term_std, y = score_for_plot)
+  ) +
+    geom_col() +
+    coord_flip() +
+    labs(
+      title = paste0(label, ": ", plot_title),
+      x = NULL,
+      y = expression(-log[10]("adjusted significance"))
+    ) +
+    theme_bw()
+
+  ggsave(
+    filename = file.path(output_dir, paste0(label, "_", plot_suffix, ".png")),
+    plot = p,
+    width = 10,
+    height = 7,
+    dpi = 300
+  )
+
+  invisible(NULL)
+}
+
+# =========================
+# MAIN ANALYSIS FUNCTION
+# =========================
+
+run_string_for_set <- function(sig_df, label, string_db, output_dir) {
+  message("========================================")
+  message("Running STRING for: ", label)
+  message("Input rows: ", nrow(sig_df))
+
+  if (nrow(sig_df) == 0) {
+    warning("No rows found for ", label)
+    return(NULL)
+  }
+
+  source_lookup <- collapse_sources(sig_df)
+  source_lookup_for_map <- make_string_safe_df(source_lookup)
+
+  message("Unique genes before mapping: ", nrow(source_lookup_for_map))
+
+  mapped <- string_db$map(
+    source_lookup_for_map,
+    "gene",
+    removeUnmappedRows = FALSE
+  )
+
+  mapped <- as.data.frame(mapped, stringsAsFactors = FALSE)
+
+  mapped_clean <- mapped %>%
+    filter(!is.na(STRING_id)) %>%
+    distinct(STRING_id, .keep_all = TRUE)
+
+  unmapped <- mapped %>%
+    filter(is.na(STRING_id))
+
+  write_csv(as_tibble(mapped), file.path(output_dir, paste0(label, "_mapped_genes.csv")))
+  write_csv(as_tibble(unmapped), file.path(output_dir, paste0(label, "_unmapped_genes.csv")))
+
+  message("Mapped genes: ", nrow(mapped_clean))
+  message("Unmapped genes: ", nrow(unmapped))
+
+  if (nrow(mapped_clean) < 2) {
+    warning("Not enough mapped genes for ", label, " to make a network.")
+    return(list(
+      mapped = mapped,
+      mapped_clean = mapped_clean,
+      unmapped = unmapped,
+      nodes = NULL,
+      edges = NULL,
+      graph = NULL
+    ))
+  }
+
+  hits <- mapped_clean$STRING_id
+
+  edges <- string_db$get_interactions(hits)
+
+  if (is.null(edges) || nrow(edges) == 0) {
+    warning("No interactions returned for ", label)
+
+    nodes_only <- mapped_clean %>%
+      transmute(
+        STRING_id = STRING_id,
+        gene = gene,
+        comparisons = comparisons,
+        n_comparisons = n_comparisons
+      )
+
+    write_csv(nodes_only, file.path(output_dir, paste0(label, "_nodes.csv")))
+
+    return(list(
+      mapped = mapped,
+      mapped_clean = mapped_clean,
+      unmapped = unmapped,
+      nodes = nodes_only,
+      edges = NULL,
+      graph = NULL
+    ))
+  }
+
+  edges <- as.data.frame(edges, stringsAsFactors = FALSE)
+  edge_names <- names(edges)
+
+  if (!all(c("from", "to") %in% edge_names)) {
+    from_col <- edge_names[grepl("from|protein1|stringId_A|preferredName_A", edge_names, ignore.case = TRUE)][1]
+    to_col   <- edge_names[grepl("to|protein2|stringId_B|preferredName_B", edge_names, ignore.case = TRUE)][1]
+
+    if (is.na(from_col) || is.na(to_col)) {
+      stop("Could not identify edge columns in STRING interaction output.")
+    }
+
+    names(edges)[names(edges) == from_col] <- "from"
+    names(edges)[names(edges) == to_col] <- "to"
+  }
+
+  edges2 <- edges %>%
+    filter(from %in% hits, to %in% hits)
+
+  if (nrow(edges2) == 0) {
+    warning("STRING returned interactions, but none remained after filtering for input hits.")
+  }
+
+  nodes <- tibble(
+    STRING_id = unique(c(edges2$from, edges2$to))
+  ) %>%
+    left_join(
+      mapped_clean %>%
+        transmute(
+          STRING_id,
+          gene = gene,
+          comparisons = comparisons,
+          n_comparisons = n_comparisons
+        ),
+      by = "STRING_id"
+    ) %>%
+    mutate(
+      gene = ifelse(is.na(gene), STRING_id, gene),
+      comparisons = ifelse(is.na(comparisons), "Unknown", comparisons),
+      n_comparisons = ifelse(is.na(n_comparisons), 0L, n_comparisons)
+    )
+
+  # -------------------------
+  # Build comparison ring membership
+  # -------------------------
+  comparison_order <- sig_df %>%
+    distinct(comparison) %>%
+    pull(comparison)
+
+  if (length(comparison_order) > 3) {
+    warning(
+      label, " has more than 3 comparisons. Only the first 3 will be used for ring plotting."
+    )
+    comparison_order <- comparison_order[1:3]
+  }
+
+  gene_comparison_presence <- sig_df %>%
+    distinct(gene, comparison) %>%
+    filter(comparison %in% comparison_order) %>%
+    mutate(present = 1L) %>%
+    tidyr::pivot_wider(
+      names_from = comparison,
+      values_from = present,
+      values_fill = 0
+    )
+
+  nodes <- nodes %>%
+    left_join(gene_comparison_presence, by = "gene")
+
+  for (cmp in comparison_order) {
+    if (!cmp %in% names(nodes)) {
+      nodes[[cmp]] <- 0L
+    }
+    nodes[[cmp]][is.na(nodes[[cmp]])] <- 0L
+  }
+
+  nodes$ring1 <- if (length(comparison_order) >= 1) nodes[[comparison_order[1]]] else 0L
+  nodes$ring2 <- if (length(comparison_order) >= 2) nodes[[comparison_order[2]]] else 0L
+  nodes$ring3 <- if (length(comparison_order) >= 3) nodes[[comparison_order[3]]] else 0L
+
+  # -------------------------
+  # Build graph
+  # -------------------------
+  g <- graph_from_data_frame(
+    d = edges2 %>% select(from, to),
+    vertices = nodes,
+    directed = FALSE
+  )
+
+  g <- igraph::simplify(g, remove.loops = TRUE, remove.multiple = TRUE)
+
+  # -------------------------
+  # Clusters
+  # -------------------------
+  if (igraph::ecount(g) > 0) {
+    clu <- cluster_louvain(g)
+    cluster_membership <- membership(clu)
+  } else {
+    cluster_membership <- setNames(rep(1, vcount(g)), V(g)$name)
+  }
+
+  nodes$cluster <- unname(cluster_membership[match(nodes$STRING_id, names(cluster_membership))])
+  V(g)$cluster <- nodes$cluster[match(V(g)$name, nodes$STRING_id)]
+
+  # -------------------------
+  # Hubs
+  # -------------------------
+  degree_vec <- igraph::degree(g)
+  nodes$degree <- unname(degree_vec[match(nodes$STRING_id, names(degree_vec))])
+  V(g)$degree <- nodes$degree[match(V(g)$name, nodes$STRING_id)]
+
+  hubs_df <- nodes %>%
+    select(STRING_id, gene, comparisons, n_comparisons, cluster, degree) %>%
+    arrange(desc(degree), gene)
+
+  # -------------------------
+  # Network stats
+  # -------------------------
+  stats_df <- make_network_stats(g, label)
+
+  # -------------------------
+  # Enrichment
+  # -------------------------
+  enrichment_raw <- tryCatch(
+    string_db$get_enrichment(mapped_clean$STRING_id),
+    error = function(e) {
+      warning("Enrichment failed for ", label, ": ", conditionMessage(e))
+      NULL
+    }
+  )
+
+  enrichment_std <- standardize_enrichment_df(enrichment_raw)
+
+  # -------------------------
+  # Save core tables
+  # -------------------------
+  write_csv(nodes, file.path(output_dir, paste0(label, "_nodes.csv")))
+  write_csv(as_tibble(edges2), file.path(output_dir, paste0(label, "_edges.csv")))
+  write_csv(hubs_df, file.path(output_dir, paste0(label, "_hubs.csv")))
+  write_csv(stats_df, file.path(output_dir, paste0(label, "_network_stats.csv")))
+
+  if (!is.null(enrichment_raw) && nrow(enrichment_raw) > 0) {
+    write_csv(as_tibble(enrichment_raw), file.path(output_dir, paste0(label, "_enrichment.csv")))
+  }
+
+  ring_key <- tibble(
+    ring = c("ring1", "ring2", "ring3")[seq_along(comparison_order)],
+    color = c("red", "blue", "green")[seq_along(comparison_order)],
+    comparison = comparison_order
+  )
+  write_csv(ring_key, file.path(output_dir, paste0(label, "_ring_key.csv")))
+
+  # -------------------------
+  # Layout
+  # -------------------------
+  layout_g <- create_layout(g, layout = "fr")
+
+  # -------------------------
+  # Plot 1: combined network
+  # -------------------------
+  p1 <- ggraph(layout_g) +
+    geom_edge_link(alpha = 0.25) +
+    geom_node_point(size = 4) +
+    geom_node_text(aes(label = gene), repel = TRUE, size = 3) +
+    ggtitle(paste0(label, ": combined STRING interaction network")) +
+    theme_void()
+
+  ggsave(
+    filename = file.path(output_dir, paste0(label, "_combined_network.png")),
+    plot = p1,
+    width = 12,
+    height = 10,
+    dpi = 300
+  )
+
+  # -------------------------
+  # Plot 2: comparison ring plot
+  # -------------------------
+  layout_r1 <- layout_g %>% filter(ring1 == 1)
+  layout_r2 <- layout_g %>% filter(ring2 == 1)
+  layout_r3 <- layout_g %>% filter(ring3 == 1)
+
+  legend_text <- paste(
+    if (length(comparison_order) >= 1) paste0("Red = ", comparison_order[1]) else NULL,
+    if (length(comparison_order) >= 2) paste0("Blue = ", comparison_order[2]) else NULL,
+    if (length(comparison_order) >= 3) paste0("Green = ", comparison_order[3]) else NULL,
+    sep = "\n"
+  )
+
+  p2 <- ggraph(layout_g) +
+    geom_edge_link(alpha = 0.20) +
+    geom_node_point(
+      data = layout_r3,
+      shape = 21, size = 10, stroke = 1.8,
+      fill = NA, color = "green4"
+    ) +
+    geom_node_point(
+      data = layout_r2,
+      shape = 21, size = 8, stroke = 1.8,
+      fill = NA, color = "blue3"
+    ) +
+    geom_node_point(
+      data = layout_r1,
+      shape = 21, size = 6, stroke = 1.8,
+      fill = NA, color = "red3"
+    ) +
+    geom_node_point(
+      shape = 21, size = 3.2, stroke = 0.6,
+      fill = "grey95", color = "black"
+    ) +
+    geom_node_text(aes(label = gene), repel = TRUE, size = 3) +
+    ggtitle(paste0(label, ": nodes with comparison rings")) +
+    annotate(
+      "text",
+      x = Inf, y = Inf,
+      label = legend_text,
+      hjust = 1.02, vjust = 1.2, size = 3.5
+    ) +
+    theme_void()
+
+  ggsave(
+    filename = file.path(output_dir, paste0(label, "_ring_plot.png")),
+    plot = p2,
+    width = 14,
+    height = 11,
+    dpi = 300
+  )
+
+  # -------------------------
+  # Plot 3: cluster-colored network
+  # -------------------------
+  p3 <- ggraph(layout_g) +
+    geom_edge_link(alpha = 0.20) +
+    geom_node_point(aes(shape = factor(cluster)), size = 4) +
+    geom_node_text(aes(label = gene), repel = TRUE, size = 3) +
+    ggtitle(paste0(label, ": network colored by cluster")) +
+    labs(shape = "Cluster") +
+    theme_void()
+
+  ggsave(
+    filename = file.path(output_dir, paste0(label, "_cluster_network.png")),
+    plot = p3,
+    width = 14,
+    height = 11,
+    dpi = 300
+  )
+
+  # -------------------------
+  # Plot 4: top hub genes
+  # -------------------------
+  hub_plot_df <- hubs_df %>%
+    slice_head(n = top_n_hubs) %>%
+    mutate(gene = fct_reorder(gene, degree))
+
+  p4 <- ggplot(hub_plot_df, aes(x = gene, y = degree)) +
+    geom_col() +
+    coord_flip() +
+    labs(
+      title = paste0(label, ": top hub genes"),
+      x = NULL,
+      y = "Degree"
+    ) +
+    theme_bw()
+
+  ggsave(
+    filename = file.path(output_dir, paste0(label, "_hub_genes.png")),
+    plot = p4,
+    width = 8,
+    height = 7,
+    dpi = 300
+  )
+
+  # -------------------------
+  # Plot 5: edge confidence histogram
+  # -------------------------
+  score_col <- extract_score_column(edges2)
+
+  if (!is.na(score_col)) {
+    p5 <- ggplot(edges2, aes(x = .data[[score_col]])) +
+      geom_histogram(bins = 30) +
+      labs(
+        title = paste0(label, ": edge confidence distribution"),
+        x = score_col,
+        y = "Number of edges"
+      ) +
+      theme_bw()
+
+    ggsave(
+      filename = file.path(output_dir, paste0(label, "_edge_confidence_histogram.png")),
+      plot = p5,
+      width = 8,
+      height = 6,
+      dpi = 300
+    )
+  }
+
+  # -------------------------
+  # Plot 6: cluster-by-comparison heatmap
+  # -------------------------
+  cluster_comp_df <- sig_df %>%
+    distinct(gene, comparison) %>%
+    left_join(nodes %>% select(gene, cluster), by = "gene") %>%
+    filter(!is.na(cluster)) %>%
+    count(cluster, comparison, name = "n_genes")
+
+  if (nrow(cluster_comp_df) > 0) {
+    p6 <- ggplot(cluster_comp_df, aes(x = comparison, y = factor(cluster), fill = n_genes)) +
+      geom_tile() +
+      scale_fill_continuous(labels = comma) +
+      labs(
+        title = paste0(label, ": cluster by comparison"),
+        x = "Comparison",
+        y = "Cluster",
+        fill = "Genes"
+      ) +
+      theme_bw() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+    ggsave(
+      filename = file.path(output_dir, paste0(label, "_cluster_by_comparison_heatmap.png")),
+      plot = p6,
+      width = 8,
+      height = 6,
+      dpi = 300
+    )
+  }
+
+  # -------------------------
+  # Plot 7+: enrichment plots
+  # -------------------------
+  if (nrow(enrichment_std) > 0) {
+    plot_enrichment_category(
+      enrichment_std = enrichment_std,
+      label = label,
+      output_dir = output_dir,
+      category_patterns = c("process", "biological process", "gobp", "go biological process"),
+      plot_suffix = "enrichment_GO_BP",
+      plot_title = "GO Biological Process enrichment"
+    )
+
+    plot_enrichment_category(
+      enrichment_std = enrichment_std,
+      label = label,
+      output_dir = output_dir,
+      category_patterns = c("kegg"),
+      plot_suffix = "enrichment_KEGG",
+      plot_title = "KEGG enrichment"
+    )
+
+    plot_enrichment_category(
+      enrichment_std = enrichment_std,
+      label = label,
+      output_dir = output_dir,
+      category_patterns = c("reactome"),
+      plot_suffix = "enrichment_Reactome",
+      plot_title = "Reactome enrichment"
+    )
+  }
+
+  # -------------------------
+  # Optional evidence table export
+  # -------------------------
+  evidence_cols <- extract_evidence_columns(edges2)
+  if (length(evidence_cols) > 0) {
+    evidence_summary <- edges2 %>%
+      summarise(across(all_of(evidence_cols), ~ mean(.x, na.rm = TRUE))) %>%
+      pivot_longer(cols = everything(), names_to = "evidence_type", values_to = "mean_score")
+
+    write_csv(evidence_summary, file.path(output_dir, paste0(label, "_evidence_summary.csv")))
+  }
+
+  return(list(
+    mapped = mapped,
+    mapped_clean = mapped_clean,
+    unmapped = unmapped,
+    nodes = nodes,
+    edges = edges2,
+    graph = g,
+    layout = layout_g,
+    comparison_order = comparison_order,
+    hubs = hubs_df,
+    stats = stats_df,
+    enrichment = enrichment_std
+  ))
+}
+
+# =========================
+# INITIALIZE STRING
+# =========================
+if (is.null(string_input_directory)) {
+  string_db <- STRINGdb$new(
+    version = string_version,
+    species = species_id,
+    score_threshold = score_threshold
+  )
+} else {
+  string_db <- STRINGdb$new(
+    version = string_version,
+    species = species_id,
+    score_threshold = score_threshold,
+    input_directory = string_input_directory
+  )
+}
+
+# =========================
+# RUN UP
+# =========================
+up_data <- read_sig_files(
+  base_dir = base_dir,
+  pattern = "^UP_sig\\.csv$",
+  gene_column_candidates = gene_column_candidates
+)
+
+up_result <- run_string_for_set(
+  sig_df = up_data$combined,
+  label = "UP",
+  string_db = string_db,
+  output_dir = output_dir
+)
+
+# =========================
+# RUN DOWN
+# =========================
+down_data <- read_sig_files(
+  base_dir = base_dir,
+  pattern = "^DOWN_sig\\.csv$",
+  gene_column_candidates = gene_column_candidates
+)
+
+down_result <- run_string_for_set(
+  sig_df = down_data$combined,
+  label = "DOWN",
+  string_db = string_db,
+  output_dir = output_dir
+)
+
+message("========================================")
+message("Done.")
+message("Results saved in: ", output_dir)
