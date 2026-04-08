@@ -1,7 +1,14 @@
 # =========================================================
-# SAFE STRING GO BP FACETED BAR PLOT WITH GENE OVERLAY
+# DEBUG SCRIPT FOR STRINGdb$map()
+# Processes UP_sig.csv and DOWN_sig.csv one file at a time
+# and prints extensive diagnostics.
 # =========================================================
 
+options(stringsAsFactors = FALSE)
+
+# -------------------------
+# Install packages if needed
+# -------------------------
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
 }
@@ -9,16 +16,14 @@ if (!requireNamespace("STRINGdb", quietly = TRUE)) {
   BiocManager::install("STRINGdb")
 }
 
-pkgs <- c("STRINGdb", "readr", "dplyr", "purrr", "stringr", "ggplot2", "tibble")
+pkgs <- c("STRINGdb", "readr", "dplyr", "stringr", "tibble")
 to_install <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(to_install) > 0) install.packages(to_install)
 
 library(STRINGdb)
 library(readr)
 library(dplyr)
-library(purrr)
 library(stringr)
-library(ggplot2)
 library(tibble)
 
 # -------------------------
@@ -28,9 +33,8 @@ base_dir <- "PATH/TO/YOUR/PARENT_DIRECTORY"
 species_id <- 9913
 string_version <- "12.0"
 score_threshold <- 400
-top_n_terms <- 8
 
-# set this if using manually downloaded STRING files
+# If using manual STRING files:
 string_input_directory <- NULL
 
 gene_column_candidates <- c(
@@ -41,15 +45,38 @@ gene_column_candidates <- c(
 # -------------------------
 # HELPERS
 # -------------------------
-choose_first_existing <- function(x, candidates) {
-  hit <- intersect(candidates, x)
-  if (length(hit) == 0) return(NA_character_)
-  hit[1]
+dbg_sep <- function(title = "") {
+  cat("\n")
+  cat(paste(rep("=", 80), collapse = ""), "\n")
+  if (nzchar(title)) cat(title, "\n")
+  cat(paste(rep("=", 80), collapse = ""), "\n")
+}
+
+dbg_print <- function(name, x, max_rows = 6) {
+  cat("\n---", name, "---\n")
+  cat("class:", paste(class(x), collapse = ", "), "\n")
+  cat("typeof:", typeof(x), "\n")
+  if (!is.null(dim(x))) {
+    cat("dim:", paste(dim(x), collapse = " x "), "\n")
+  } else {
+    cat("length:", length(x), "\n")
+  }
+
+  if (is.data.frame(x) || tibble::is_tibble(x)) {
+    cat("names:", paste(names(x), collapse = ", "), "\n")
+    print(utils::head(x, max_rows))
+    cat("\nstr():\n")
+    str(x)
+  } else {
+    print(utils::head(x, max_rows))
+    cat("\nstr():\n")
+    str(x)
+  }
 }
 
 find_gene_column <- function(df, candidates) {
-  hit <- intersect(candidates, names(df))
-  if (length(hit) > 0) return(hit[1])
+  hits <- intersect(candidates, names(df))
+  if (length(hits) > 0) return(hits[1])
 
   text_cols <- names(df)[vapply(df, function(x) is.character(x) || is.factor(x), logical(1))]
   if (length(text_cols) > 0) return(text_cols[1])
@@ -57,52 +84,360 @@ find_gene_column <- function(df, candidates) {
   stop("Could not identify a gene column. Available columns: ", paste(names(df), collapse = ", "))
 }
 
-read_gene_list <- function(file_path, gene_column_candidates) {
-  df <- read_csv(file_path, show_col_types = FALSE)
-  gene_col <- find_gene_column(df, gene_column_candidates)
-
-  tibble(
-    gene = as.character(df[[gene_col]])
-  ) %>%
-    mutate(gene = str_trim(gene)) %>%
-    filter(!is.na(gene), gene != "") %>%
-    distinct()
+safe_read_csv <- function(file_path) {
+  tryCatch(
+    readr::read_csv(file_path, show_col_types = FALSE),
+    error = function(e) {
+      cat("READ ERROR:", conditionMessage(e), "\n")
+      NULL
+    }
+  )
 }
 
-extract_go_gene_string <- function(df_row) {
-  candidate_cols <- c(
-    "preferredNames",
-    "preferred_names",
-    "inputGenes",
-    "genes",
-    "gene_names",
-    "matching proteins",
-    "matching_proteins"
+make_plain_map_input <- function(genes) {
+  out <- data.frame(
+    gene = as.character(genes),
+    stringsAsFactors = FALSE
   )
 
-  existing <- intersect(candidate_cols, names(df_row))
-  if (length(existing) == 0) return(NA_character_)
+  out <- out[
+    !is.na(out$gene) & trimws(out$gene) != "",
+    ,
+    drop = FALSE
+  ]
 
-  val <- df_row[[existing[1]]][1]
-  if (is.null(val) || length(val) == 0 || is.na(val)) return(NA_character_)
+  out$gene <- trimws(out$gene)
+  out <- unique(out)
 
-  as.character(val)
+  rownames(out) <- NULL
+  out
 }
 
-split_gene_membership <- function(x) {
-  if (is.na(x) || x == "") return(character(0))
-  parts <- unlist(strsplit(x, "[,;]"))
-  parts <- trimws(parts)
-  unique(parts[parts != ""])
+# -------------------------
+# INIT STRING
+# -------------------------
+dbg_sep("INITIALIZING STRINGdb")
+
+string_db <- if (is.null(string_input_directory)) {
+  STRINGdb$new(
+    version = string_version,
+    species = species_id,
+    score_threshold = score_threshold
+  )
+} else {
+  STRINGdb$new(
+    version = string_version,
+    species = species_id,
+    score_threshold = score_threshold,
+    input_directory = string_input_directory
+  )
 }
 
-standardize_enrichment_df <- function(enrichment_df) {
-  if (is.null(enrichment_df) || nrow(enrichment_df) == 0) return(tibble())
+cat("STRINGdb initialized successfully.\n")
+cat("species_id =", species_id, "\n")
+cat("string_version =", string_version, "\n")
+cat("score_threshold =", score_threshold, "\n")
 
-  df <- as_tibble(enrichment_df)
+# -------------------------
+# FIND FILES
+# -------------------------
+dbg_sep("SEARCHING FOR FILES")
 
-  category_col <- choose_first_existing(names(df), c("category", "term_category", "source"))
-  term_col <- choose_first_existing(names(df), c("description", "term", "term_description"))
+up_files <- list.files(
+  path = base_dir,
+  pattern = "^UP_sig\\.csv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+down_files <- list.files(
+  path = base_dir,
+  pattern = "^DOWN_sig\\.csv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+all_files <- c(up_files, down_files)
+
+cat("Found", length(up_files), "UP files\n")
+cat("Found", length(down_files), "DOWN files\n")
+cat("Found", length(all_files), "total files\n")
+
+print(all_files)
+
+if (length(all_files) == 0) {
+  stop("No UP_sig.csv or DOWN_sig.csv files found.")
+}
+
+# -------------------------
+# DEBUG LOG
+# -------------------------
+debug_log <- list()
+
+# -------------------------
+# PROCESS FILES ONE BY ONE
+# -------------------------
+for (i in seq_along(all_files)) {
+  file_path <- all_files[i]
+  contrast_name <- basename(dirname(file_path))
+  direction <- basename(file_path)
+
+  dbg_sep(paste0("PROCESSING FILE ", i, " / ", length(all_files)))
+  cat("file_path   :", file_path, "\n")
+  cat("contrast    :", contrast_name, "\n")
+  cat("direction   :", direction, "\n")
+
+  log_row <- tibble(
+    file_path = file_path,
+    contrast = contrast_name,
+    file_name = direction,
+    status = "started",
+    gene_col = NA_character_,
+    input_rows = NA_integer_,
+    input_unique_genes = NA_integer_,
+    mapped_rows = NA_integer_,
+    mapped_unique_string = NA_integer_,
+    unmapped_rows = NA_integer_,
+    error_stage = NA_character_,
+    error_message = NA_character_
+  )
+
+  # ---- read file ----
+  dbg_sep("READING CSV")
+  df <- safe_read_csv(file_path)
+
+  if (is.null(df)) {
+    log_row$status <- "failed"
+    log_row$error_stage <- "read_csv"
+    log_row$error_message <- "Failed to read CSV"
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  dbg_print("raw_df", df)
+
+  # ---- find gene column ----
+  dbg_sep("IDENTIFYING GENE COLUMN")
+  gene_col <- tryCatch(
+    find_gene_column(df, gene_column_candidates),
+    error = function(e) e
+  )
+
+  if (inherits(gene_col, "error")) {
+    cat("GENE COLUMN ERROR:", conditionMessage(gene_col), "\n")
+    log_row$status <- "failed"
+    log_row$error_stage <- "find_gene_column"
+    log_row$error_message <- conditionMessage(gene_col)
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  cat("Chosen gene column:", gene_col, "\n")
+  log_row$gene_col <- gene_col
+
+  dbg_sep("EXTRACTING GENE VECTOR")
+  gene_vec <- tryCatch(
+    as.character(df[[gene_col]]),
+    error = function(e) e
+  )
+
+  if (inherits(gene_vec, "error")) {
+    cat("GENE EXTRACTION ERROR:", conditionMessage(gene_vec), "\n")
+    log_row$status <- "failed"
+    log_row$error_stage <- "extract_gene_vector"
+    log_row$error_message <- conditionMessage(gene_vec)
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  dbg_print("gene_vec_raw", gene_vec)
+
+  # ---- build map input ----
+  dbg_sep("BUILDING MAP INPUT")
+  map_input <- tryCatch(
+    make_plain_map_input(gene_vec),
+    error = function(e) e
+  )
+
+  if (inherits(map_input, "error")) {
+    cat("MAP INPUT ERROR:", conditionMessage(map_input), "\n")
+    log_row$status <- "failed"
+    log_row$error_stage <- "make_plain_map_input"
+    log_row$error_message <- conditionMessage(map_input)
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  dbg_print("map_input", map_input)
+
+  log_row$input_rows <- nrow(map_input)
+  log_row$input_unique_genes <- dplyr::n_distinct(map_input$gene)
+
+  if (nrow(map_input) == 0) {
+    cat("No valid genes after cleaning.\n")
+    log_row$status <- "failed"
+    log_row$error_stage <- "empty_map_input"
+    log_row$error_message <- "No valid genes after cleaning"
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  cat("First 20 genes going into STRINGdb$map():\n")
+  print(utils::head(map_input$gene, 20))
+
+  cat("Any NA in gene column? ", any(is.na(map_input$gene)), "\n")
+  cat("Any blank genes? ", any(trimws(map_input$gene) == ""), "\n")
+  cat("Any duplicated genes? ", any(duplicated(map_input$gene)), "\n")
+
+  # ---- test a tiny subset first ----
+  dbg_sep("TESTING STRINGdb$map() ON FIRST 5 GENES")
+  tiny_input <- utils::head(map_input, 5)
+  dbg_print("tiny_input", tiny_input)
+
+  tiny_map <- tryCatch(
+    string_db$map(tiny_input, "gene", removeUnmappedRows = FALSE),
+    error = function(e) e
+  )
+
+  if (inherits(tiny_map, "error")) {
+    cat("TINY MAP ERROR:", conditionMessage(tiny_map), "\n")
+    log_row$status <- "failed"
+    log_row$error_stage <- "tiny_map"
+    log_row$error_message <- conditionMessage(tiny_map)
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  dbg_print("tiny_map_result", tiny_map)
+
+  # ---- full mapping ----
+  dbg_sep("RUNNING FULL STRINGdb$map()")
+  mapped <- tryCatch(
+    string_db$map(map_input, "gene", removeUnmappedRows = FALSE),
+    error = function(e) e
+  )
+
+  if (inherits(mapped, "error")) {
+    cat("FULL MAP ERROR:", conditionMessage(mapped), "\n")
+    cat("Attempting line-by-line debug mapping on first 20 genes...\n")
+
+    # line-by-line debug
+    per_gene_results <- vector("list", min(20, nrow(map_input)))
+    for (j in seq_len(min(20, nrow(map_input)))) {
+      one_gene <- data.frame(gene = map_input$gene[j], stringsAsFactors = FALSE)
+      cat("\nTesting single gene [", j, "]: ", one_gene$gene, "\n", sep = "")
+      one_res <- tryCatch(
+        string_db$map(one_gene, "gene", removeUnmappedRows = FALSE),
+        error = function(e) e
+      )
+      if (inherits(one_res, "error")) {
+        cat("  -> single gene map ERROR:", conditionMessage(one_res), "\n")
+        per_gene_results[[j]] <- tibble(
+          gene = one_gene$gene,
+          single_gene_status = "error",
+          single_gene_message = conditionMessage(one_res)
+        )
+      } else {
+        cat("  -> single gene map OK\n")
+        per_gene_results[[j]] <- tibble(
+          gene = one_gene$gene,
+          single_gene_status = "ok",
+          single_gene_message = NA_character_
+        )
+      }
+    }
+
+    single_gene_debug <- bind_rows(per_gene_results)
+    dbg_print("single_gene_debug", single_gene_debug)
+    write_csv(single_gene_debug, file.path(base_dir, paste0("DEBUG_single_gene_map_", contrast_name, "_", direction, ".csv")))
+
+    log_row$status <- "failed"
+    log_row$error_stage <- "full_map"
+    log_row$error_message <- conditionMessage(mapped)
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  mapped <- as.data.frame(mapped, stringsAsFactors = FALSE)
+  dbg_print("mapped_result", mapped)
+
+  log_row$mapped_rows <- nrow(mapped)
+
+  if ("STRING_id" %in% names(mapped)) {
+    log_row$mapped_unique_string <- dplyr::n_distinct(mapped$STRING_id[!is.na(mapped$STRING_id)])
+    log_row$unmapped_rows <- sum(is.na(mapped$STRING_id))
+  } else {
+    log_row$mapped_unique_string <- NA_integer_
+    log_row$unmapped_rows <- NA_integer_
+  }
+
+  # ---- enrichment test ----
+  dbg_sep("RUNNING ENRICHMENT")
+  if ("STRING_id" %in% names(mapped)) {
+    string_ids <- unique(mapped$STRING_id[!is.na(mapped$STRING_id)])
+  } else {
+    string_ids <- character(0)
+  }
+
+  dbg_print("string_ids", string_ids)
+
+  if (length(string_ids) < 2) {
+    cat("Not enough mapped STRING IDs for enrichment.\n")
+    log_row$status <- "ok_no_enrichment"
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  enrichment <- tryCatch(
+    string_db$get_enrichment(string_ids),
+    error = function(e) e
+  )
+
+  if (inherits(enrichment, "error")) {
+    cat("ENRICHMENT ERROR:", conditionMessage(enrichment), "\n")
+    log_row$status <- "ok_map_enrichment_failed"
+    log_row$error_stage <- "get_enrichment"
+    log_row$error_message <- conditionMessage(enrichment)
+    debug_log[[length(debug_log) + 1]] <- log_row
+    next
+  }
+
+  enrichment <- as.data.frame(enrichment, stringsAsFactors = FALSE)
+  dbg_print("enrichment_result", enrichment)
+
+  cat("Enrichment column names:\n")
+  print(names(enrichment))
+
+  # ---- save per-file debug outputs ----
+  dbg_sep("WRITING PER-FILE DEBUG OUTPUTS")
+  safe_prefix <- paste0(
+    "DEBUG_",
+    gsub("[^A-Za-z0-9]+", "_", contrast_name),
+    "_",
+    gsub("[^A-Za-z0-9]+", "_", direction)
+  )
+
+  write_csv(as_tibble(map_input), file.path(base_dir, paste0(safe_prefix, "_map_input.csv")))
+  write_csv(as_tibble(mapped), file.path(base_dir, paste0(safe_prefix, "_mapped.csv")))
+  write_csv(as_tibble(enrichment), file.path(base_dir, paste0(safe_prefix, "_enrichment.csv")))
+
+  log_row$status <- "ok"
+  debug_log[[length(debug_log) + 1]] <- log_row
+}
+
+# -------------------------
+# FINAL DEBUG SUMMARY
+# -------------------------
+dbg_sep("FINAL DEBUG SUMMARY")
+
+debug_df <- bind_rows(debug_log)
+dbg_print("debug_df", debug_df, max_rows = 100)
+
+write_csv(debug_df, file.path(base_dir, "STRING_debug_log.csv"))
+
+cat("\nDone.\n")
+cat("Wrote summary log to:\n")
+cat(file.path(base_dir, "STRING_debug_log.csv"), "\n")  term_col <- choose_first_existing(names(df), c("description", "term", "term_description"))
   term_id_col <- choose_first_existing(names(df), c("term_id", "term", "id"))
   fdr_col <- choose_first_existing(names(df), c("fdr", "FDR", "false_discovery_rate"))
   p_col <- choose_first_existing(names(df), c("p_value", "pvalue", "p.value"))
