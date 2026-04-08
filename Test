@@ -314,21 +314,269 @@ run_string_for_set <- function(sig_df, label, string_db, output_dir) {
     geom_node_text(aes(label = gene), repel = TRUE, size = 3) +
     ggtitle(paste0(label, ": nodes colored by source file")) +
     theme_void()
+run_string_for_set <- function(sig_df, label, string_db, output_dir) {
+  message("========================================")
+  message("Running STRING for: ", label)
+  message("Input rows: ", nrow(sig_df))
+
+  if (nrow(sig_df) == 0) {
+    warning("No rows found for ", label)
+    return(NULL)
+  }
+
+  # collapse duplicates while retaining file provenance
+  source_lookup <- collapse_sources(sig_df)
+  source_lookup_for_map <- make_string_safe_df(source_lookup)
+
+  message("Unique genes before mapping: ", nrow(source_lookup_for_map))
+
+  print(class(source_lookup_for_map))
+  print(names(source_lookup_for_map))
+  str(source_lookup_for_map)
+
+  # map genes to STRING IDs
+  mapped <- string_db$map(
+    source_lookup_for_map,
+    "gene",
+    removeUnmappedRows = FALSE
+  )
+
+  mapped <- as.data.frame(mapped, stringsAsFactors = FALSE)
+
+  mapped_clean <- mapped %>%
+    filter(!is.na(STRING_id)) %>%
+    distinct(STRING_id, .keep_all = TRUE)
+
+  unmapped <- mapped %>%
+    filter(is.na(STRING_id))
+
+  write_csv(as_tibble(mapped), file.path(output_dir, paste0(label, "_mapped_genes.csv")))
+  write_csv(as_tibble(unmapped), file.path(output_dir, paste0(label, "_unmapped_genes.csv")))
+
+  message("Mapped genes: ", nrow(mapped_clean))
+  message("Unmapped genes: ", nrow(unmapped))
+
+  if (nrow(mapped_clean) < 2) {
+    warning("Not enough mapped genes for ", label, " to make a network.")
+    return(list(
+      mapped = mapped,
+      mapped_clean = mapped_clean,
+      unmapped = unmapped,
+      nodes = NULL,
+      edges = NULL,
+      graph = NULL
+    ))
+  }
+
+  hits <- mapped_clean$STRING_id
+
+  # get interactions from STRING
+  edges <- string_db$get_interactions(hits)
+
+  if (is.null(edges) || nrow(edges) == 0) {
+    warning("No interactions returned for ", label)
+
+    nodes_only <- mapped_clean %>%
+      transmute(
+        STRING_id = STRING_id,
+        gene = gene,
+        source_files = source_files,
+        n_files = n_files
+      )
+
+    write_csv(nodes_only, file.path(output_dir, paste0(label, "_nodes.csv")))
+
+    return(list(
+      mapped = mapped,
+      mapped_clean = mapped_clean,
+      unmapped = unmapped,
+      nodes = nodes_only,
+      edges = NULL,
+      graph = NULL
+    ))
+  }
+
+  edges <- as.data.frame(edges, stringsAsFactors = FALSE)
+
+  edge_names <- names(edges)
+
+  if (!all(c("from", "to") %in% edge_names)) {
+    from_col <- edge_names[grepl("from|protein1|stringId_A|preferredName_A", edge_names, ignore.case = TRUE)][1]
+    to_col   <- edge_names[grepl("to|protein2|stringId_B|preferredName_B", edge_names, ignore.case = TRUE)][1]
+
+    if (is.na(from_col) || is.na(to_col)) {
+      stop("Could not identify edge columns in STRING interaction output.")
+    }
+
+    names(edges)[names(edges) == from_col] <- "from"
+    names(edges)[names(edges) == to_col] <- "to"
+  }
+
+  edges2 <- edges %>%
+    filter(from %in% hits, to %in% hits)
+
+  # Build node table
+  nodes <- tibble(
+    STRING_id = unique(c(edges2$from, edges2$to))
+  ) %>%
+    left_join(
+      mapped_clean %>%
+        transmute(
+          STRING_id,
+          gene = gene,
+          source_files = source_files,
+          n_files = n_files
+        ),
+      by = "STRING_id"
+    ) %>%
+    mutate(
+      gene = ifelse(is.na(gene), STRING_id, gene),
+      source_files = ifelse(is.na(source_files), "Unknown", source_files),
+      n_files = ifelse(is.na(n_files), 0L, n_files)
+    )
+
+  # -------------------------
+  # Build per-comparison ring membership
+  # -------------------------
+  file_order <- sig_df %>%
+    distinct(source_file) %>%
+    pull(source_file)
+
+  if (length(file_order) > 3) {
+    warning(
+      label, " has more than 3 source files. Only the first 3 will be used for ring plotting:\n",
+      paste(file_order[1:3], collapse = "\n")
+    )
+    file_order <- file_order[1:3]
+  }
+
+  # gene x file presence table
+  gene_file_presence <- sig_df %>%
+    distinct(gene, source_file) %>%
+    filter(source_file %in% file_order) %>%
+    mutate(present = 1L) %>%
+    tidyr::pivot_wider(
+      names_from = source_file,
+      values_from = present,
+      values_fill = 0
+    )
+
+  nodes <- nodes %>%
+    left_join(gene_file_presence, by = "gene")
+
+  # fill missing presence columns
+  for (f in file_order) {
+    if (!f %in% names(nodes)) {
+      nodes[[f]] <- 0L
+    }
+    nodes[[f]][is.na(nodes[[f]])] <- 0L
+  }
+
+  # create standard ring columns
+  nodes$ring1 <- if (length(file_order) >= 1) nodes[[file_order[1]]] else 0L
+  nodes$ring2 <- if (length(file_order) >= 2) nodes[[file_order[2]]] else 0L
+  nodes$ring3 <- if (length(file_order) >= 3) nodes[[file_order[3]]] else 0L
+
+  # save node/edge tables
+  write_csv(nodes, file.path(output_dir, paste0(label, "_nodes.csv")))
+  write_csv(as_tibble(edges2), file.path(output_dir, paste0(label, "_edges.csv")))
+
+  # save ring legend
+  ring_key <- tibble(
+    ring = c("ring1", "ring2", "ring3")[seq_along(file_order)],
+    comparison_file = file_order
+  )
+  write_csv(ring_key, file.path(output_dir, paste0(label, "_ring_key.csv")))
+
+  # build graph
+  g <- graph_from_data_frame(
+    d = edges2 %>% select(from, to),
+    vertices = nodes,
+    directed = FALSE
+  )
+
+  # -------------------------
+  # Plot 1: combined network
+  # -------------------------
+  p1 <- ggraph(g, layout = "fr") +
+    geom_edge_link(alpha = 0.25) +
+    geom_node_point(size = 4) +
+    geom_node_text(aes(label = gene), repel = TRUE, size = 3) +
+    ggtitle(paste0(label, ": combined STRING interaction network")) +
+    theme_void()
 
   ggsave(
-    filename = file.path(output_dir, paste0(label, "_colored_by_file.png")),
+    filename = file.path(output_dir, paste0(label, "_combined_network.png")),
+    plot = p1,
+    width = 12,
+    height = 10,
+    dpi = 300
+  )
+
+  # -------------------------
+  # Plot 2: ring plot
+  # -------------------------
+  # Base node = white center
+  # ring1 = red
+  # ring2 = blue
+  # ring3 = green
+  #
+  # trick:
+  # draw larger colored circles only for genes present in that comparison,
+  # then overlay smaller white circle, then next ring, etc.
+
+  p2 <- ggraph(g, layout = "fr") +
+    geom_edge_link(alpha = 0.20) +
+
+    # outer ring (ring3)
+    geom_node_point(
+      data = function(x) x[x$ring3 == 1, ],
+      shape = 21, size = 10, stroke = 1.8,
+      fill = "white", color = "green4"
+    ) +
+
+    # middle ring (ring2)
+    geom_node_point(
+      data = function(x) x[x$ring2 == 1, ],
+      shape = 21, size = 8, stroke = 1.8,
+      fill = "white", color = "blue3"
+    ) +
+
+    # inner ring (ring1)
+    geom_node_point(
+      data = function(x) x[x$ring1 == 1, ],
+      shape = 21, size = 6, stroke = 1.8,
+      fill = "white", color = "red3"
+    ) +
+
+    # node center
+    geom_node_point(
+      shape = 21, size = 3.5, stroke = 0.8,
+      fill = "grey95", color = "black"
+    ) +
+
+    geom_node_text(aes(label = gene), repel = TRUE, size = 3) +
+    ggtitle(paste0(label, ": nodes with comparison rings")) +
+    annotate(
+      "text",
+      x = Inf, y = Inf,
+      label = paste(
+        if (length(file_order) >= 1) paste0("Red = ", file_order[1]) else NULL,
+        if (length(file_order) >= 2) paste0("Blue = ", file_order[2]) else NULL,
+        if (length(file_order) >= 3) paste0("Green = ", file_order[3]) else NULL,
+        sep = "\n"
+      ),
+      hjust = 1.02, vjust = 1.5, size = 3.5
+    ) +
+    theme_void()
+
+  ggsave(
+    filename = file.path(output_dir, paste0(label, "_ring_plot.png")),
     plot = p2,
     width = 14,
     height = 11,
     dpi = 300
   )
-
-  # save color legend values
-  legend_df <- nodes %>%
-    distinct(source_group) %>%
-    arrange(source_group)
-
-  write_csv(legend_df, file.path(output_dir, paste0(label, "_file_groups.csv")))
 
   return(list(
     mapped = mapped,
@@ -336,7 +584,8 @@ run_string_for_set <- function(sig_df, label, string_db, output_dir) {
     unmapped = unmapped,
     nodes = nodes,
     edges = edges2,
-    graph = g
+    graph = g,
+    file_order = file_order
   ))
 }
 
