@@ -506,4 +506,57 @@ ggsave(
   bg = "white"
 )
 
+
+
+
+
 write_csv(bars_df, file.path(base_dir, "STRING_GO_BP_bar_data.csv"))
+
+
+
+
+
+
+
+# -------------------------
+# PLOT
+# -------------------------
+max_x <- max(bars_df$score_for_plot, na.rm = TRUE)
+
+p <- ggplot(bars_df, aes(x = score_for_plot, y = panel_term)) +
+  geom_col(width = 0.7) +
+  facet_wrap(
+    ~ panel_name,
+    nrow = 1,
+    scales = "free_y",   # shared x axis, free y per panel
+    labeller = as_labeller(panel_labels_used)
+  ) +
+  scale_y_discrete(labels = label_map) +
+  scale_x_continuous(
+    limits = c(0, max_x * 1.05),
+    expand = c(0, 0)
+  ) +
+  labs(
+    title = "STRING GO Biological Process enrichment",
+    x = expression(-log[10]("significance")),
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    strip.background = element_rect(fill = "white"),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(size = 10)
+  )
+
+print(p)
+
+ggsave(
+  filename = file.path(base_dir, "STRING_GO_BP_side_by_side_bars_only.png"),
+  plot = p,
+  width = max(16, length(panel_order) * 3.5),
+  height = 8,
+  dpi = 300,
+  bg = "white"
+)
+
