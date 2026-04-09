@@ -1,25 +1,15 @@
 # ============================================================
-# gene_alt_merge_and_compare.R
+# gene_alt_merge_and_compare_hardcoded.R
 #
-# Usage:
-#   Rscript gene_alt_merge_and_compare.R human.csv human cattle.csv cattle pig.csv pig output_prefix
+# PURPOSE
+#   1. Read 3 input files with gene symbols in column 1
+#   2. Query HGNC/VGNC for approved + previous + alias names
+#   3. Merge all names into one comma-delimited column
+#   4. Compare the original symbols from each file against the
+#      merged-name column in the other two files
+#   5. Count matches when at least one exact token is found
 #
-# Example:
-#   Rscript gene_alt_merge_and_compare.R human_genes.csv human cattle_genes.csv cattle pig_genes.csv pig results/out
-#
-# Input files:
-#   - first column contains gene symbols
-#   - header is allowed or not allowed; script uses first column regardless
-#
-# Species allowed:
-#   - human
-#   - cattle
-#   - pig
-#
-# Output:
-#   1) one expanded CSV per input file
-#   2) one cross-match summary CSV
-#   3) one per-gene match-detail CSV
+# EDIT ONLY THE SETTINGS SECTION BELOW
 # ============================================================
 
 suppressPackageStartupMessages({
@@ -32,9 +22,32 @@ suppressPackageStartupMessages({
   library(tibble)
 })
 
-# ----------------------------
-# Utility
-# ----------------------------
+# ============================================================
+# SETTINGS: EDIT THESE
+# ============================================================
+
+file1 <- "C:/Users/yourname/Documents/human_genes.csv"
+species1 <- "human"
+
+file2 <- "C:/Users/yourname/Documents/cattle_genes.csv"
+species2 <- "cattle"
+
+file3 <- "C:/Users/yourname/Documents/pig_genes.csv"
+species3 <- "pig"
+
+output_dir <- "C:/Users/yourname/Documents/gene_compare_output"
+output_prefix <- "gene_compare"
+
+# If your files do NOT have a header row, set this to FALSE
+files_have_header <- TRUE
+
+# Optional: pause between API calls so you are gentler on the server
+sleep_seconds <- 0.1
+
+# ============================================================
+# FUNCTIONS
+# ============================================================
+
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0 || all(is.na(x))) y else x
 }
@@ -61,22 +74,21 @@ collapse_terms <- function(x) {
   paste(x, collapse = ",")
 }
 
-# case-insensitive exact token matching
 normalize_token <- function(x) {
   x <- trimws(tolower(as.character(x)))
   x[nzchar(x)]
 }
 
-# ----------------------------
-# API helpers
-# ----------------------------
 get_json <- function(url) {
   req <- request(url) |>
     req_headers(Accept = "application/json")
 
   resp <- tryCatch(
     req_perform(req),
-    error = function(e) NULL
+    error = function(e) {
+      message("Request failed: ", url)
+      NULL
+    }
   )
 
   if (is.null(resp)) return(NULL)
@@ -85,7 +97,10 @@ get_json <- function(url) {
 
   tryCatch(
     fromJSON(txt, simplifyVector = TRUE),
-    error = function(e) NULL
+    error = function(e) {
+      message("JSON parse failed: ", url)
+      NULL
+    }
   )
 }
 
@@ -178,6 +193,7 @@ query_one_symbol <- function(symbol, species = c("human", "cattle", "pig")) {
     url <- build_url(species = species, field = field, value = symbol)
     dat <- get_json(url)
     docs <- extract_docs(dat)
+    Sys.sleep(sleep_seconds)
     normalize_record(docs, query_symbol = symbol, search_field = field, species = species)
   }) |>
     bind_rows()
@@ -229,16 +245,19 @@ expand_gene_list <- function(symbols, species = c("human", "cattle", "pig")) {
     select(species, original_input, approved_symbol, approved_name, stable_id, all_names, found_in_db)
 }
 
-# ----------------------------
-# File reading
-# ----------------------------
-read_first_column <- function(path) {
-  dat <- read_csv(path, col_names = TRUE, show_col_types = FALSE, progress = FALSE)
-  if (ncol(dat) < 1) stop("No columns found in file: ", path)
+read_first_column <- function(path, has_header = TRUE) {
+  dat <- read_csv(
+    path,
+    col_names = has_header,
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+
+  if (ncol(dat) < 1) {
+    stop("No columns found in file: ", path)
+  }
 
   vals <- dat[[1]]
-
-  # handle cases where header row was interpreted as header but file may be one-column clean
   vals <- clean_text(vals)
 
   if (length(vals) == 0) {
@@ -248,16 +267,11 @@ read_first_column <- function(path) {
   vals
 }
 
-# ----------------------------
-# Matching logic
-# ----------------------------
 build_lookup_terms <- function(df) {
-  # all approved + alternatives for a file
   normalize_token(unlist(lapply(df$all_names, split_terms)))
 }
 
 check_matches_against_lookup <- function(query_symbols, lookup_terms) {
-  q <- normalize_token(query_symbols)
   tibble(
     original_input = query_symbols,
     matched = normalize_token(query_symbols) %in% lookup_terms
@@ -313,66 +327,68 @@ compare_all_three <- function(df1, df2, df3, label1, label2, label3) {
   )
 }
 
-# ----------------------------
-# Main
-# ----------------------------
-args <- commandArgs(trailingOnly = TRUE)
-
-if (length(args) != 7) {
-  stop(
-    paste0(
-      "\nUsage:\n",
-      "  Rscript gene_alt_merge_and_compare.R ",
-      "file1 species1 file2 species2 file3 species3 output_prefix\n\n",
-      "Example:\n",
-      "  Rscript gene_alt_merge_and_compare.R human.csv human cattle.csv cattle pig.csv pig results/out\n"
-    )
-  )
-}
-
-file1 <- args[1]
-species1 <- tolower(args[2])
-file2 <- args[3]
-species2 <- tolower(args[4])
-file3 <- args[5]
-species3 <- tolower(args[6])
-out_prefix <- args[7]
+# ============================================================
+# RUN
+# ============================================================
 
 valid_species <- c("human", "cattle", "pig")
+
 if (!species1 %in% valid_species) stop("species1 must be one of: human, cattle, pig")
 if (!species2 %in% valid_species) stop("species2 must be one of: human, cattle, pig")
 if (!species3 %in% valid_species) stop("species3 must be one of: human, cattle, pig")
 
-genes1 <- read_first_column(file1)
-genes2 <- read_first_column(file2)
-genes3 <- read_first_column(file3)
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
 
+message("Reading input files...")
+genes1 <- read_first_column(file1, has_header = files_have_header)
+genes2 <- read_first_column(file2, has_header = files_have_header)
+genes3 <- read_first_column(file3, has_header = files_have_header)
+
+message("Expanding file 1...")
 res1 <- expand_gene_list(genes1, species = species1)
+
+message("Expanding file 2...")
 res2 <- expand_gene_list(genes2, species = species2)
+
+message("Expanding file 3...")
 res3 <- expand_gene_list(genes3, species = species3)
 
 label1 <- paste0("file1_", species1)
 label2 <- paste0("file2_", species2)
 label3 <- paste0("file3_", species3)
 
+message("Comparing files...")
 cmp <- compare_all_three(res1, res2, res3, label1, label2, label3)
 
-write_csv(res1, paste0(out_prefix, "_", label1, "_expanded.csv"))
-write_csv(res2, paste0(out_prefix, "_", label2, "_expanded.csv"))
-write_csv(res3, paste0(out_prefix, "_", label3, "_expanded.csv"))
+expanded1_path <- file.path(output_dir, paste0(output_prefix, "_", label1, "_expanded.csv"))
+expanded2_path <- file.path(output_dir, paste0(output_prefix, "_", label2, "_expanded.csv"))
+expanded3_path <- file.path(output_dir, paste0(output_prefix, "_", label3, "_expanded.csv"))
 
-write_csv(cmp$detail1, paste0(out_prefix, "_", label1, "_match_detail.csv"))
-write_csv(cmp$detail2, paste0(out_prefix, "_", label2, "_match_detail.csv"))
-write_csv(cmp$detail3, paste0(out_prefix, "_", label3, "_match_detail.csv"))
+detail1_path <- file.path(output_dir, paste0(output_prefix, "_", label1, "_match_detail.csv"))
+detail2_path <- file.path(output_dir, paste0(output_prefix, "_", label2, "_match_detail.csv"))
+detail3_path <- file.path(output_dir, paste0(output_prefix, "_", label3, "_match_detail.csv"))
 
-write_csv(cmp$summary, paste0(out_prefix, "_cross_match_summary.csv"))
+summary_path <- file.path(output_dir, paste0(output_prefix, "_cross_match_summary.csv"))
 
-message("\nDone.\n")
-message("Wrote:\n")
-message("  ", paste0(out_prefix, "_", label1, "_expanded.csv"))
-message("  ", paste0(out_prefix, "_", label2, "_expanded.csv"))
-message("  ", paste0(out_prefix, "_", label3, "_expanded.csv"))
-message("  ", paste0(out_prefix, "_", label1, "_match_detail.csv"))
-message("  ", paste0(out_prefix, "_", label2, "_match_detail.csv"))
-message("  ", paste0(out_prefix, "_", label3, "_match_detail.csv"))
-message("  ", paste0(out_prefix, "_cross_match_summary.csv"))
+write_csv(res1, expanded1_path)
+write_csv(res2, expanded2_path)
+write_csv(res3, expanded3_path)
+
+write_csv(cmp$detail1, detail1_path)
+write_csv(cmp$detail2, detail2_path)
+write_csv(cmp$detail3, detail3_path)
+
+write_csv(cmp$summary, summary_path)
+
+message("")
+message("Done.")
+message("Output files:")
+message("  ", expanded1_path)
+message("  ", expanded2_path)
+message("  ", expanded3_path)
+message("  ", detail1_path)
+message("  ", detail2_path)
+message("  ", detail3_path)
+message("  ", summary_path)
