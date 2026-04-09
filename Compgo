@@ -1,0 +1,563 @@
+suppressPackageStartupMessages({
+  library(readr)
+  library(dplyr)
+  library(purrr)
+  library(stringr)
+  library(tibble)
+})
+
+# ============================================================
+# SETTINGS: EDIT THESE
+# ============================================================
+
+# Input gene-list files: gene symbols must be in column 1
+file1 <- "C:/Users/yourname/Documents/human_genes.csv"
+species1 <- "human"
+
+file2 <- "C:/Users/yourname/Documents/cattle_genes.csv"
+species2 <- "cattle"
+
+file3 <- "C:/Users/yourname/Documents/pig_genes.csv"
+species3 <- "pig"
+
+# Predownloaded reference files
+hgnc_file <- "C:/Users/yourname/Documents/reference/hgnc_complete_set.txt"
+vgnc_file <- "C:/Users/yourname/Documents/reference/vgnc_complete_set.txt"
+
+# Predownloaded GO mapping files (recommended from Ensembl BioMart)
+# Expected columns can be flexible; see load_go_file() below
+go_file_human  <- "C:/Users/yourname/Documents/reference/human_gene_go.tsv"
+go_file_cattle <- "C:/Users/yourname/Documents/reference/cattle_gene_go.tsv"
+go_file_pig    <- "C:/Users/yourname/Documents/reference/pig_gene_go.tsv"
+
+output_dir <- "C:/Users/yourname/Documents/gene_compare_output"
+output_prefix <- "gene_compare"
+
+# Set to FALSE if your 3 input files do not have headers
+files_have_header <- TRUE
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+clean_text <- function(x) {
+  x <- as.character(x)
+  x <- trimws(x)
+  x <- x[!is.na(x)]
+  x <- x[nzchar(x)]
+  unique(x)
+}
+
+normalize_token <- function(x) {
+  x <- tolower(trimws(as.character(x)))
+  x <- x[!is.na(x)]
+  x <- x[nzchar(x)]
+  x
+}
+
+split_terms <- function(x) {
+  if (length(x) == 0 || is.null(x) || all(is.na(x))) return(character(0))
+  vals <- unlist(strsplit(as.character(x), "\\s*\\|\\s*|\\s*,\\s*"))
+  vals <- trimws(vals)
+  vals <- vals[!is.na(vals)]
+  vals <- vals[nzchar(vals)]
+  unique(vals)
+}
+
+collapse_terms <- function(x) {
+  x <- clean_text(x)
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = ",")
+}
+
+safe_col <- function(df, colname) {
+  if (colname %in% names(df)) as.character(df[[colname]]) else rep(NA_character_, nrow(df))
+}
+
+read_first_column <- function(path, has_header = TRUE) {
+  dat <- read_csv(path, col_names = has_header, show_col_types = FALSE, progress = FALSE)
+  if (ncol(dat) < 1) stop("No columns found in file: ", path)
+
+  vals <- clean_text(dat[[1]])
+  if (length(vals) == 0) stop("No usable gene symbols found in first column of file: ", path)
+
+  vals
+}
+
+first_existing_col <- function(df, candidates) {
+  hit <- candidates[candidates %in% names(df)]
+  if (length(hit) == 0) return(NULL)
+  hit[1]
+}
+
+# ============================================================
+# LOAD REFERENCE FILES
+# ============================================================
+
+load_hgnc_reference <- function(path) {
+  message("Loading HGNC reference...")
+  df <- read_tsv(path, show_col_types = FALSE, progress = FALSE)
+
+  tibble(
+    species = "human",
+    stable_id = safe_col(df, "hgnc_id"),
+    approved_symbol = safe_col(df, "symbol"),
+    approved_name = safe_col(df, "name"),
+    previous_symbols = safe_col(df, "prev_symbol"),
+    alias_symbols = safe_col(df, "alias_symbol")
+  )
+}
+
+load_vgnc_reference <- function(path) {
+  message("Loading VGNC reference...")
+  df <- read_tsv(path, show_col_types = FALSE, progress = FALSE)
+
+  # cattle taxid = 9913
+  # pig taxid    = 9823
+  taxid <- NULL
+
+  if ("taxon_id" %in% names(df)) {
+    taxid <- as.character(df$taxon_id)
+  } else if ("taxid" %in% names(df)) {
+    taxid <- as.character(df$taxid)
+  } else if ("species_taxon_id" %in% names(df)) {
+    taxid <- as.character(df$species_taxon_id)
+  } else {
+    taxid <- as.character(df[[1]])
+  }
+
+  species_norm <- case_when(
+    taxid == "9913" ~ "cattle",
+    taxid == "9823" ~ "pig",
+    TRUE ~ NA_character_
+  )
+
+  tibble(
+    species = species_norm,
+    taxid = taxid,
+    stable_id = safe_col(df, "vgnc_id"),
+    approved_symbol = safe_col(df, "symbol"),
+    approved_name = safe_col(df, "name"),
+    previous_symbols = safe_col(df, "prev_symbol"),
+    alias_symbols = safe_col(df, "alias_symbol")
+  ) |>
+    filter(!is.na(species))
+}
+
+build_reference_for_species <- function(species, hgnc_ref, vgnc_ref) {
+  if (species == "human") {
+    hgnc_ref
+  } else {
+    vgnc_ref |> filter(species == !!species)
+  }
+}
+
+# ============================================================
+# LOAD GO FILES
+# Recommended fields from Ensembl BioMart:
+# - Gene stable ID
+# - GO term accession
+# - GO term name
+# - GO domain
+# ============================================================
+
+load_go_file <- function(path, species) {
+  message("Loading GO file for ", species, "...")
+  df <- read_tsv(path, show_col_types = FALSE, progress = FALSE)
+
+  gene_col <- first_existing_col(df, c(
+    "Gene stable ID", "Gene stable ID version", "gene_stable_id",
+    "ensembl_gene_id", "Gene stable ID(s)"
+  ))
+
+  go_id_col <- first_existing_col(df, c(
+    "GO term accession", "go_id", "GO_ID", "go_accession"
+  ))
+
+  go_name_col <- first_existing_col(df, c(
+    "GO term name", "name_1006", "go_term_name", "GO term name(s)"
+  ))
+
+  go_domain_col <- first_existing_col(df, c(
+    "GO domain", "namespace_1003", "go_domain"
+  ))
+
+  if (is.null(gene_col) || is.null(go_id_col)) {
+    stop(
+      "GO file for ", species, " must contain a gene stable ID column and a GO ID column.\n",
+      "Found columns:\n", paste(names(df), collapse = ", ")
+    )
+  }
+
+  out <- tibble(
+    gene_id_raw = as.character(df[[gene_col]]),
+    go_id = as.character(df[[go_id_col]]),
+    go_name = if (!is.null(go_name_col)) as.character(df[[go_name_col]]) else NA_character_,
+    go_domain = if (!is.null(go_domain_col)) as.character(df[[go_domain_col]]) else NA_character_
+  ) |>
+    mutate(
+      # strip version suffix if present, e.g. ENSG000001234.5 -> ENSG000001234
+      gene_id = sub("\\..*$", "", gene_id_raw),
+      go_id = trimws(go_id),
+      go_name = trimws(go_name),
+      go_domain = trimws(go_domain)
+    ) |>
+    filter(!is.na(gene_id), nzchar(gene_id), !is.na(go_id), nzchar(go_id))
+
+  out |>
+    group_by(gene_id) |>
+    summarise(
+      go_ids = collapse_terms(go_id),
+      go_names = collapse_terms(go_name),
+      go_bp_ids = collapse_terms(go_id[tolower(go_domain) %in% c("biological_process", "biological process")]),
+      go_mf_ids = collapse_terms(go_id[tolower(go_domain) %in% c("molecular_function", "molecular function")]),
+      go_cc_ids = collapse_terms(go_id[tolower(go_domain) %in% c("cellular_component", "cellular component")]),
+      .groups = "drop"
+    )
+}
+
+build_go_map_list <- function(go_human, go_cattle, go_pig) {
+  list(
+    human = go_human,
+    cattle = go_cattle,
+    pig = go_pig
+  )
+}
+
+get_go_map_for_species <- function(species, go_maps) {
+  go_maps[[species]]
+}
+
+# ============================================================
+# FAST LOOKUP INDEX
+# ============================================================
+
+build_lookup_index <- function(ref_df) {
+  species_name <- unique(ref_df$species)
+  species_name <- species_name[!is.na(species_name)]
+  if (length(species_name) == 0) species_name <- "unknown"
+
+  message("Building lookup index for ", paste(species_name, collapse = ", "), "...")
+
+  canon <- ref_df |>
+    mutate(
+      row_id = seq_len(n()),
+      approved_symbol = as.character(approved_symbol),
+      approved_name = as.character(approved_name),
+      stable_id = as.character(stable_id),
+      previous_symbols = as.character(previous_symbols),
+      alias_symbols = as.character(alias_symbols)
+    )
+
+  long_list <- lapply(seq_len(nrow(canon)), function(i) {
+    toks <- unique(c(
+      canon$approved_symbol[i],
+      split_terms(canon$previous_symbols[i]),
+      split_terms(canon$alias_symbols[i])
+    ))
+
+    toks <- normalize_token(toks)
+    toks <- toks[!is.na(toks) & nzchar(toks)]
+
+    if (length(toks) == 0) return(NULL)
+
+    tibble(
+      token = toks,
+      row_id = i
+    )
+  })
+
+  lookup <- bind_rows(long_list)
+
+  if (is.null(lookup) || nrow(lookup) == 0) {
+    lookup <- tibble(
+      token = character(0),
+      row_id = integer(0)
+    )
+  } else {
+    lookup <- lookup |>
+      distinct(token, row_id)
+  }
+
+  list(
+    canonical = canon,
+    lookup = lookup
+  )
+}
+
+# ============================================================
+# FAST EXPANSION OF INPUT GENE LISTS + GO JOIN
+# ============================================================
+
+expand_gene_list_fast <- function(symbols, species, hgnc_ref, vgnc_ref, go_maps) {
+  ref_df <- build_reference_for_species(species, hgnc_ref, vgnc_ref)
+  idx <- build_lookup_index(ref_df)
+
+  canonical <- idx$canonical
+  lookup <- idx$lookup
+  go_map <- get_go_map_for_species(species, go_maps)
+
+  symbols <- clean_text(symbols)
+
+  query_tbl <- tibble(
+    original_input = symbols,
+    token = normalize_token(symbols)
+  )
+
+  hit_tbl <- query_tbl |>
+    left_join(lookup, by = "token")
+
+  out_list <- lapply(seq_len(nrow(query_tbl)), function(i) {
+    sym <- query_tbl$original_input[i]
+
+    row_ids <- hit_tbl$row_id[hit_tbl$original_input == sym]
+    row_ids <- unique(row_ids[!is.na(row_ids)])
+
+    if (length(row_ids) == 0) {
+      return(tibble(
+        species = species,
+        original_input = sym,
+        approved_symbol = NA_character_,
+        approved_name = NA_character_,
+        stable_id = NA_character_,
+        all_names = sym,
+        found_in_db = FALSE,
+        go_ids = NA_character_,
+        go_names = NA_character_,
+        go_bp_ids = NA_character_,
+        go_mf_ids = NA_character_,
+        go_cc_ids = NA_character_
+      ))
+    }
+
+    hit <- canonical[row_ids, , drop = FALSE]
+
+    all_names <- clean_text(c(
+      sym,
+      hit$approved_symbol,
+      unlist(lapply(hit$previous_symbols, split_terms)),
+      unlist(lapply(hit$alias_symbols, split_terms))
+    ))
+
+    stable_ids <- unique(clean_text(hit$stable_id))
+
+    # join GO by stable gene IDs
+    go_hit <- tibble(gene_id = sub("\\..*$", "", stable_ids)) |>
+      left_join(go_map, by = c("gene_id" = "gene_id"))
+
+    tibble(
+      species = species,
+      original_input = sym,
+      approved_symbol = collapse_terms(unique(clean_text(hit$approved_symbol))),
+      approved_name = collapse_terms(unique(clean_text(hit$approved_name))),
+      stable_id = collapse_terms(stable_ids),
+      all_names = collapse_terms(all_names),
+      found_in_db = TRUE,
+      go_ids = collapse_terms(unlist(lapply(go_hit$go_ids, split_terms))),
+      go_names = collapse_terms(unlist(lapply(go_hit$go_names, split_terms))),
+      go_bp_ids = collapse_terms(unlist(lapply(go_hit$go_bp_ids, split_terms))),
+      go_mf_ids = collapse_terms(unlist(lapply(go_hit$go_mf_ids, split_terms))),
+      go_cc_ids = collapse_terms(unlist(lapply(go_hit$go_cc_ids, split_terms)))
+    )
+  })
+
+  bind_rows(out_list)
+}
+
+# ============================================================
+# CROSS-FILE MATCHING
+# ============================================================
+
+build_lookup_terms <- function(df) {
+  normalize_token(unlist(lapply(df$all_names, split_terms)))
+}
+
+check_matches_against_lookup <- function(query_symbols, lookup_terms) {
+  tibble(
+    original_input = query_symbols,
+    matched = normalize_token(query_symbols) %in% lookup_terms
+  )
+}
+
+# GO overlap: for each row in dfA, count TRUE if any GO ID overlaps the
+# union of GO IDs in dfB
+build_go_lookup <- function(df, go_col = "go_ids") {
+  clean_text(unlist(lapply(df[[go_col]], split_terms)))
+}
+
+check_go_overlap_against_lookup <- function(query_go_ids, lookup_go_ids) {
+  tibble(
+    matched_go = vapply(query_go_ids, function(x) {
+      q <- clean_text(split_terms(x))
+      if (length(q) == 0) return(FALSE)
+      any(q %in% lookup_go_ids)
+    }, logical(1))
+  )
+}
+
+compare_all_three <- function(df1, df2, df3, label1, label2, label3) {
+  lookup1 <- build_lookup_terms(df1)
+  lookup2 <- build_lookup_terms(df2)
+  lookup3 <- build_lookup_terms(df3)
+
+  go_lookup1 <- build_go_lookup(df1, "go_ids")
+  go_lookup2 <- build_go_lookup(df2, "go_ids")
+  go_lookup3 <- build_go_lookup(df3, "go_ids")
+
+  m1_2 <- check_matches_against_lookup(df1$original_input, lookup2) |>
+    rename(!!paste0("found_in_", label2) := matched)
+  m1_3 <- check_matches_against_lookup(df1$original_input, lookup3) |>
+    rename(!!paste0("found_in_", label3) := matched)
+
+  m2_1 <- check_matches_against_lookup(df2$original_input, lookup1) |>
+    rename(!!paste0("found_in_", label1) := matched)
+  m2_3 <- check_matches_against_lookup(df2$original_input, lookup3) |>
+    rename(!!paste0("found_in_", label3) := matched)
+
+  m3_1 <- check_matches_against_lookup(df3$original_input, lookup1) |>
+    rename(!!paste0("found_in_", label1) := matched)
+  m3_2 <- check_matches_against_lookup(df3$original_input, lookup2) |>
+    rename(!!paste0("found_in_", label2) := matched)
+
+  g1_2 <- check_go_overlap_against_lookup(df1$go_ids, go_lookup2) |>
+    rename(!!paste0("go_overlap_in_", label2) := matched_go)
+  g1_3 <- check_go_overlap_against_lookup(df1$go_ids, go_lookup3) |>
+    rename(!!paste0("go_overlap_in_", label3) := matched_go)
+
+  g2_1 <- check_go_overlap_against_lookup(df2$go_ids, go_lookup1) |>
+    rename(!!paste0("go_overlap_in_", label1) := matched_go)
+  g2_3 <- check_go_overlap_against_lookup(df2$go_ids, go_lookup3) |>
+    rename(!!paste0("go_overlap_in_", label3) := matched_go)
+
+  g3_1 <- check_go_overlap_against_lookup(df3$go_ids, go_lookup1) |>
+    rename(!!paste0("go_overlap_in_", label1) := matched_go)
+  g3_2 <- check_go_overlap_against_lookup(df3$go_ids, go_lookup2) |>
+    rename(!!paste0("go_overlap_in_", label2) := matched_go)
+
+  detail1 <- df1 |>
+    bind_cols(m1_2 |> select(-original_input)) |>
+    bind_cols(m1_3 |> select(-original_input)) |>
+    bind_cols(g1_2) |>
+    bind_cols(g1_3)
+
+  detail2 <- df2 |>
+    bind_cols(m2_1 |> select(-original_input)) |>
+    bind_cols(m2_3 |> select(-original_input)) |>
+    bind_cols(g2_1) |>
+    bind_cols(g2_3)
+
+  detail3 <- df3 |>
+    bind_cols(m3_1 |> select(-original_input)) |>
+    bind_cols(m3_2 |> select(-original_input)) |>
+    bind_cols(g3_1) |>
+    bind_cols(g3_2)
+
+  summary_tbl <- tibble(
+    source_file = c(label1, label1, label2, label2, label3, label3),
+    searched_in = c(label2, label3, label1, label3, label1, label2),
+    n_input_symbols = c(nrow(df1), nrow(df1), nrow(df2), nrow(df2), nrow(df3), nrow(df3)),
+    n_name_found = c(
+      sum(detail1[[paste0("found_in_", label2)]], na.rm = TRUE),
+      sum(detail1[[paste0("found_in_", label3)]], na.rm = TRUE),
+      sum(detail2[[paste0("found_in_", label1)]], na.rm = TRUE),
+      sum(detail2[[paste0("found_in_", label3)]], na.rm = TRUE),
+      sum(detail3[[paste0("found_in_", label1)]], na.rm = TRUE),
+      sum(detail3[[paste0("found_in_", label2)]], na.rm = TRUE)
+    ),
+    n_go_overlap = c(
+      sum(detail1[[paste0("go_overlap_in_", label2)]], na.rm = TRUE),
+      sum(detail1[[paste0("go_overlap_in_", label3)]], na.rm = TRUE),
+      sum(detail2[[paste0("go_overlap_in_", label1)]], na.rm = TRUE),
+      sum(detail2[[paste0("go_overlap_in_", label3)]], na.rm = TRUE),
+      sum(detail3[[paste0("go_overlap_in_", label1)]], na.rm = TRUE),
+      sum(detail3[[paste0("go_overlap_in_", label2)]], na.rm = TRUE)
+    )
+  ) |>
+    mutate(
+      pct_name_found = round(100 * n_name_found / n_input_symbols, 2),
+      pct_go_overlap = round(100 * n_go_overlap / n_input_symbols, 2)
+    )
+
+  list(
+    detail1 = detail1,
+    detail2 = detail2,
+    detail3 = detail3,
+    summary = summary_tbl
+  )
+}
+
+# ============================================================
+# RUN
+# ============================================================
+
+valid_species <- c("human", "cattle", "pig")
+
+if (!species1 %in% valid_species) stop("species1 must be one of: human, cattle, pig")
+if (!species2 %in% valid_species) stop("species2 must be one of: human, cattle, pig")
+if (!species3 %in% valid_species) stop("species3 must be one of: human, cattle, pig")
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+message("Reading reference files...")
+hgnc_ref <- load_hgnc_reference(hgnc_file)
+vgnc_ref <- load_vgnc_reference(vgnc_file)
+
+message("Reading GO files...")
+go_human  <- load_go_file(go_file_human, "human")
+go_cattle <- load_go_file(go_file_cattle, "cattle")
+go_pig    <- load_go_file(go_file_pig, "pig")
+go_maps <- build_go_map_list(go_human, go_cattle, go_pig)
+
+message("Reading input gene lists...")
+genes1 <- read_first_column(file1, files_have_header)
+genes2 <- read_first_column(file2, files_have_header)
+genes3 <- read_first_column(file3, files_have_header)
+
+message("Expanding file 1...")
+res1 <- expand_gene_list_fast(genes1, species1, hgnc_ref, vgnc_ref, go_maps)
+
+message("Expanding file 2...")
+res2 <- expand_gene_list_fast(genes2, species2, hgnc_ref, vgnc_ref, go_maps)
+
+message("Expanding file 3...")
+res3 <- expand_gene_list_fast(genes3, species3, hgnc_ref, vgnc_ref, go_maps)
+
+label1 <- paste0("file1_", species1)
+label2 <- paste0("file2_", species2)
+label3 <- paste0("file3_", species3)
+
+message("Comparing files...")
+cmp <- compare_all_three(res1, res2, res3, label1, label2, label3)
+
+expanded1_path <- file.path(output_dir, paste0(output_prefix, "_", label1, "_expanded.csv"))
+expanded2_path <- file.path(output_dir, paste0(output_prefix, "_", label2, "_expanded.csv"))
+expanded3_path <- file.path(output_dir, paste0(output_prefix, "_", label3, "_expanded.csv"))
+
+detail1_path <- file.path(output_dir, paste0(output_prefix, "_", label1, "_match_detail.csv"))
+detail2_path <- file.path(output_dir, paste0(output_prefix, "_", label2, "_match_detail.csv"))
+detail3_path <- file.path(output_dir, paste0(output_prefix, "_", label3, "_match_detail.csv"))
+
+summary_path <- file.path(output_dir, paste0(output_prefix, "_cross_match_summary.csv"))
+
+write_csv(res1, expanded1_path)
+write_csv(res2, expanded2_path)
+write_csv(res3, expanded3_path)
+
+write_csv(cmp$detail1, detail1_path)
+write_csv(cmp$detail2, detail2_path)
+write_csv(cmp$detail3, detail3_path)
+
+write_csv(cmp$summary, summary_path)
+
+message("")
+message("Done.")
+message("Output files:")
+message("  ", expanded1_path)
+message("  ", expanded2_path)
+message("  ", expanded3_path)
+message("  ", detail1_path)
+message("  ", detail2_path)
+message("  ", detail3_path)
+message("  ", summary_path)
