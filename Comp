@@ -1,0 +1,378 @@
+# ============================================================
+# gene_alt_merge_and_compare.R
+#
+# Usage:
+#   Rscript gene_alt_merge_and_compare.R human.csv human cattle.csv cattle pig.csv pig output_prefix
+#
+# Example:
+#   Rscript gene_alt_merge_and_compare.R human_genes.csv human cattle_genes.csv cattle pig_genes.csv pig results/out
+#
+# Input files:
+#   - first column contains gene symbols
+#   - header is allowed or not allowed; script uses first column regardless
+#
+# Species allowed:
+#   - human
+#   - cattle
+#   - pig
+#
+# Output:
+#   1) one expanded CSV per input file
+#   2) one cross-match summary CSV
+#   3) one per-gene match-detail CSV
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(httr2)
+  library(jsonlite)
+  library(dplyr)
+  library(purrr)
+  library(readr)
+  library(stringr)
+  library(tibble)
+})
+
+# ----------------------------
+# Utility
+# ----------------------------
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0 || all(is.na(x))) y else x
+}
+
+clean_text <- function(x) {
+  x <- as.character(x)
+  x <- trimws(x)
+  x <- x[!is.na(x)]
+  x <- x[nzchar(x)]
+  unique(x)
+}
+
+split_terms <- function(x) {
+  if (is.null(x) || length(x) == 0 || is.na(x) || !nzchar(x)) return(character(0))
+  vals <- unlist(strsplit(as.character(x), "\\s*,\\s*"))
+  vals <- trimws(vals)
+  vals <- vals[nzchar(vals)]
+  unique(vals)
+}
+
+collapse_terms <- function(x) {
+  x <- clean_text(x)
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = ",")
+}
+
+# case-insensitive exact token matching
+normalize_token <- function(x) {
+  x <- trimws(tolower(as.character(x)))
+  x[nzchar(x)]
+}
+
+# ----------------------------
+# API helpers
+# ----------------------------
+get_json <- function(url) {
+  req <- request(url) |>
+    req_headers(Accept = "application/json")
+
+  resp <- tryCatch(
+    req_perform(req),
+    error = function(e) NULL
+  )
+
+  if (is.null(resp)) return(NULL)
+
+  txt <- resp_body_string(resp)
+
+  tryCatch(
+    fromJSON(txt, simplifyVector = TRUE),
+    error = function(e) NULL
+  )
+}
+
+extract_docs <- function(x) {
+  if (is.null(x)) return(NULL)
+  if (!"response" %in% names(x)) return(NULL)
+  if (!"docs" %in% names(x$response)) return(NULL)
+
+  docs <- x$response$docs
+  if (length(docs) == 0) return(NULL)
+
+  if (is.list(docs) && !is.data.frame(docs)) {
+    docs <- bind_rows(docs)
+  }
+
+  as_tibble(docs)
+}
+
+build_url <- function(species = c("human", "cattle", "pig"), field, value) {
+  species <- match.arg(species)
+  value_enc <- URLencode(value, reserved = TRUE)
+
+  if (species == "human") {
+    paste0("https://rest.genenames.org/search/", field, "/", value_enc)
+  } else {
+    species_name <- switch(
+      species,
+      cattle = "cow",
+      pig = "pig"
+    )
+    paste0(
+      "https://rest.genenames.org/vgnc/search/",
+      field, "/", value_enc,
+      "?species=", URLencode(species_name, reserved = TRUE)
+    )
+  }
+}
+
+collapse_list_col <- function(x) {
+  if (is.list(x)) {
+    vapply(
+      x,
+      function(y) {
+        y <- clean_text(as.character(y))
+        if (length(y) == 0) NA_character_ else paste(y, collapse = ",")
+      },
+      character(1)
+    )
+  } else {
+    as.character(x)
+  }
+}
+
+normalize_record <- function(df, query_symbol, search_field, species) {
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+
+  needed_cols <- c("symbol", "name", "alias_symbol", "prev_symbol", "hgnc_id", "vgnc_id", "species")
+  for (nm in needed_cols) {
+    if (!nm %in% names(df)) df[[nm]] <- NA
+  }
+
+  df |>
+    mutate(
+      alias_symbol = collapse_list_col(alias_symbol),
+      prev_symbol  = collapse_list_col(prev_symbol),
+      approved_symbol = as.character(symbol),
+      approved_name = as.character(name),
+      stable_id = coalesce(as.character(hgnc_id), as.character(vgnc_id)),
+      matched_species = coalesce(as.character(species), species),
+      original_input = query_symbol,
+      matched_by = search_field
+    ) |>
+    transmute(
+      original_input,
+      matched_by,
+      matched_species,
+      stable_id,
+      approved_symbol,
+      approved_name,
+      previous_symbols = prev_symbol,
+      alias_symbols = alias_symbol
+    )
+}
+
+query_one_symbol <- function(symbol, species = c("human", "cattle", "pig")) {
+  species <- match.arg(species)
+  search_fields <- c("symbol", "alias_symbol", "prev_symbol")
+
+  results <- map(search_fields, function(field) {
+    url <- build_url(species = species, field = field, value = symbol)
+    dat <- get_json(url)
+    docs <- extract_docs(dat)
+    normalize_record(docs, query_symbol = symbol, search_field = field, species = species)
+  }) |>
+    bind_rows()
+
+  if (nrow(results) == 0) {
+    return(
+      tibble(
+        original_input   = symbol,
+        stable_id        = NA_character_,
+        approved_symbol  = NA_character_,
+        approved_name    = NA_character_,
+        all_names        = symbol,
+        found_in_db      = FALSE
+      )
+    )
+  }
+
+  approved_symbol <- clean_text(results$approved_symbol)
+  prev_symbols    <- clean_text(unlist(lapply(results$previous_symbols, split_terms)))
+  alias_symbols   <- clean_text(unlist(lapply(results$alias_symbols, split_terms)))
+  original_input  <- unique(results$original_input)[1]
+  stable_id       <- clean_text(results$stable_id)[1] %||% NA_character_
+  approved_name   <- clean_text(results$approved_name)[1] %||% NA_character_
+
+  all_names <- clean_text(c(original_input, approved_symbol, prev_symbols, alias_symbols))
+
+  tibble(
+    original_input   = original_input,
+    stable_id        = stable_id,
+    approved_symbol  = collapse_terms(approved_symbol),
+    approved_name    = approved_name,
+    all_names        = collapse_terms(all_names),
+    found_in_db      = TRUE
+  )
+}
+
+expand_gene_list <- function(symbols, species = c("human", "cattle", "pig")) {
+  species <- match.arg(species)
+  symbols <- clean_text(symbols)
+
+  map_dfr(symbols, function(sym) {
+    message("Querying ", species, ": ", sym)
+    query_one_symbol(sym, species = species)
+  }) |>
+    mutate(
+      species = species,
+      all_names = ifelse(is.na(all_names) | !nzchar(all_names), original_input, all_names)
+    ) |>
+    select(species, original_input, approved_symbol, approved_name, stable_id, all_names, found_in_db)
+}
+
+# ----------------------------
+# File reading
+# ----------------------------
+read_first_column <- function(path) {
+  dat <- read_csv(path, col_names = TRUE, show_col_types = FALSE, progress = FALSE)
+  if (ncol(dat) < 1) stop("No columns found in file: ", path)
+
+  vals <- dat[[1]]
+
+  # handle cases where header row was interpreted as header but file may be one-column clean
+  vals <- clean_text(vals)
+
+  if (length(vals) == 0) {
+    stop("No usable gene symbols found in first column of file: ", path)
+  }
+
+  vals
+}
+
+# ----------------------------
+# Matching logic
+# ----------------------------
+build_lookup_terms <- function(df) {
+  # all approved + alternatives for a file
+  normalize_token(unlist(lapply(df$all_names, split_terms)))
+}
+
+check_matches_against_lookup <- function(query_symbols, lookup_terms) {
+  q <- normalize_token(query_symbols)
+  tibble(
+    original_input = query_symbols,
+    matched = normalize_token(query_symbols) %in% lookup_terms
+  )
+}
+
+compare_all_three <- function(df1, df2, df3, label1, label2, label3) {
+  lookup1 <- build_lookup_terms(df1)
+  lookup2 <- build_lookup_terms(df2)
+  lookup3 <- build_lookup_terms(df3)
+
+  m1_2 <- check_matches_against_lookup(df1$original_input, lookup2) |> rename(!!paste0("found_in_", label2) := matched)
+  m1_3 <- check_matches_against_lookup(df1$original_input, lookup3) |> rename(!!paste0("found_in_", label3) := matched)
+
+  m2_1 <- check_matches_against_lookup(df2$original_input, lookup1) |> rename(!!paste0("found_in_", label1) := matched)
+  m2_3 <- check_matches_against_lookup(df2$original_input, lookup3) |> rename(!!paste0("found_in_", label3) := matched)
+
+  m3_1 <- check_matches_against_lookup(df3$original_input, lookup1) |> rename(!!paste0("found_in_", label1) := matched)
+  m3_2 <- check_matches_against_lookup(df3$original_input, lookup2) |> rename(!!paste0("found_in_", label2) := matched)
+
+  detail1 <- df1 |>
+    left_join(m1_2, by = "original_input") |>
+    left_join(m1_3, by = "original_input")
+
+  detail2 <- df2 |>
+    left_join(m2_1, by = "original_input") |>
+    left_join(m2_3, by = "original_input")
+
+  detail3 <- df3 |>
+    left_join(m3_1, by = "original_input") |>
+    left_join(m3_2, by = "original_input")
+
+  summary_tbl <- tibble(
+    source_file = c(label1, label1, label2, label2, label3, label3),
+    searched_in = c(label2, label3, label1, label3, label1, label2),
+    n_input_symbols = c(nrow(df1), nrow(df1), nrow(df2), nrow(df2), nrow(df3), nrow(df3)),
+    n_found = c(
+      sum(detail1[[paste0("found_in_", label2)]], na.rm = TRUE),
+      sum(detail1[[paste0("found_in_", label3)]], na.rm = TRUE),
+      sum(detail2[[paste0("found_in_", label1)]], na.rm = TRUE),
+      sum(detail2[[paste0("found_in_", label3)]], na.rm = TRUE),
+      sum(detail3[[paste0("found_in_", label1)]], na.rm = TRUE),
+      sum(detail3[[paste0("found_in_", label2)]], na.rm = TRUE)
+    )
+  ) |>
+    mutate(percent_found = round(100 * n_found / n_input_symbols, 2))
+
+  list(
+    detail1 = detail1,
+    detail2 = detail2,
+    detail3 = detail3,
+    summary = summary_tbl
+  )
+}
+
+# ----------------------------
+# Main
+# ----------------------------
+args <- commandArgs(trailingOnly = TRUE)
+
+if (length(args) != 7) {
+  stop(
+    paste0(
+      "\nUsage:\n",
+      "  Rscript gene_alt_merge_and_compare.R ",
+      "file1 species1 file2 species2 file3 species3 output_prefix\n\n",
+      "Example:\n",
+      "  Rscript gene_alt_merge_and_compare.R human.csv human cattle.csv cattle pig.csv pig results/out\n"
+    )
+  )
+}
+
+file1 <- args[1]
+species1 <- tolower(args[2])
+file2 <- args[3]
+species2 <- tolower(args[4])
+file3 <- args[5]
+species3 <- tolower(args[6])
+out_prefix <- args[7]
+
+valid_species <- c("human", "cattle", "pig")
+if (!species1 %in% valid_species) stop("species1 must be one of: human, cattle, pig")
+if (!species2 %in% valid_species) stop("species2 must be one of: human, cattle, pig")
+if (!species3 %in% valid_species) stop("species3 must be one of: human, cattle, pig")
+
+genes1 <- read_first_column(file1)
+genes2 <- read_first_column(file2)
+genes3 <- read_first_column(file3)
+
+res1 <- expand_gene_list(genes1, species = species1)
+res2 <- expand_gene_list(genes2, species = species2)
+res3 <- expand_gene_list(genes3, species = species3)
+
+label1 <- paste0("file1_", species1)
+label2 <- paste0("file2_", species2)
+label3 <- paste0("file3_", species3)
+
+cmp <- compare_all_three(res1, res2, res3, label1, label2, label3)
+
+write_csv(res1, paste0(out_prefix, "_", label1, "_expanded.csv"))
+write_csv(res2, paste0(out_prefix, "_", label2, "_expanded.csv"))
+write_csv(res3, paste0(out_prefix, "_", label3, "_expanded.csv"))
+
+write_csv(cmp$detail1, paste0(out_prefix, "_", label1, "_match_detail.csv"))
+write_csv(cmp$detail2, paste0(out_prefix, "_", label2, "_match_detail.csv"))
+write_csv(cmp$detail3, paste0(out_prefix, "_", label3, "_match_detail.csv"))
+
+write_csv(cmp$summary, paste0(out_prefix, "_cross_match_summary.csv"))
+
+message("\nDone.\n")
+message("Wrote:\n")
+message("  ", paste0(out_prefix, "_", label1, "_expanded.csv"))
+message("  ", paste0(out_prefix, "_", label2, "_expanded.csv"))
+message("  ", paste0(out_prefix, "_", label3, "_expanded.csv"))
+message("  ", paste0(out_prefix, "_", label1, "_match_detail.csv"))
+message("  ", paste0(out_prefix, "_", label2, "_match_detail.csv"))
+message("  ", paste0(out_prefix, "_", label3, "_match_detail.csv"))
+message("  ", paste0(out_prefix, "_cross_match_summary.csv"))
