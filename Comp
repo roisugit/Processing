@@ -21,10 +21,7 @@ file3 <- "C:/Users/yourname/Documents/pig_genes.csv"
 species3 <- "pig"
 
 # Predownloaded reference files
-# HGNC complete set for human
 hgnc_file <- "C:/Users/yourname/Documents/reference/hgnc_complete_set.txt"
-
-# VGNC complete set for vertebrates
 vgnc_file <- "C:/Users/yourname/Documents/reference/vgnc_complete_set.txt"
 
 # Output location
@@ -104,20 +101,33 @@ load_vgnc_reference <- function(path) {
   message("Loading VGNC reference...")
   df <- read_tsv(path, show_col_types = FALSE, progress = FALSE)
 
-  species_raw <- dplyr::coalesce(
-    if ("species" %in% names(df)) as.character(df$species) else NULL,
-    if ("taxon_name" %in% names(df)) as.character(df$taxon_name) else NULL,
-    rep(NA_character_, nrow(df))
-  )
+  # Taxonomy IDs:
+  # cattle = 9913
+  # pig    = 9823
+
+  # Try named taxonomy columns first
+  taxid <- NULL
+
+  if ("taxon_id" %in% names(df)) {
+    taxid <- as.character(df$taxon_id)
+  } else if ("taxid" %in% names(df)) {
+    taxid <- as.character(df$taxid)
+  } else if ("species_taxon_id" %in% names(df)) {
+    taxid <- as.character(df$species_taxon_id)
+  } else {
+    # Fall back to first column if your file stores taxid there
+    taxid <- as.character(df[[1]])
+  }
 
   species_norm <- case_when(
-    str_detect(tolower(species_raw), "cow|cattle|bos taurus") ~ "cattle",
-    str_detect(tolower(species_raw), "pig|sus scrofa") ~ "pig",
+    taxid == "9913" ~ "cattle",
+    taxid == "9823" ~ "pig",
     TRUE ~ NA_character_
   )
 
   tibble(
     species = species_norm,
+    taxid = taxid,
     stable_id = safe_col(df, "vgnc_id"),
     approved_symbol = safe_col(df, "symbol"),
     approved_name = safe_col(df, "name"),
@@ -258,8 +268,6 @@ expand_gene_list_fast <- function(symbols, species, hgnc_ref, vgnc_ref) {
 
 # ============================================================
 # CROSS-FILE MATCHING
-# Counts a match if the original symbol from one file appears
-# as at least one token in the all_names column of another file
 # ============================================================
 
 build_lookup_terms <- function(df) {
