@@ -2,24 +2,33 @@ $termsFile = "C:\path\to\terms.txt"
 $csvFile   = "C:\path\to\input.csv"
 $outFile   = "C:\path\to\matches.csv"
 
-# Read terms, trim whitespace, skip blank lines
-$terms = Get-Content $termsFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+# Read and clean terms
+$terms = Get-Content $termsFile |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -ne "" }
 
 # Import CSV
 $rows = Import-Csv $csvFile
 
-# Find rows where any cell contains any term
+# Collect matching rows
 $matches = foreach ($row in $rows) {
-    $values = $row.PSObject.Properties.Value
+    $found = $false
+
     foreach ($term in $terms) {
-        if ($values -match [regex]::Escape($term)) {
-            $row
-            break
+        foreach ($prop in $row.PSObject.Properties) {
+            $value = [string]$prop.Value
+
+            if ($value -match [regex]::Escape($term)) {
+                $found = $true
+                break
+            }
         }
+
+        if ($found) { break }
     }
+
+    if ($found) { $row }
 }
 
-# Remove duplicate rows if a row matched multiple terms
-$matches | Select-Object -Unique | Export-Csv $outFile -NoTypeInformation
-
+$matches | Export-Csv $outFile -NoTypeInformation
 Write-Host "Done. Matches written to $outFile"
