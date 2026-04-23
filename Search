@@ -2,7 +2,7 @@ $termsFile = "C:\path\to\terms.txt"
 $csvFile   = "C:\path\to\input.csv"
 $outFile   = "C:\path\to\matches.csv"
 
-# Read and clean terms
+# Read terms
 $terms = Get-Content $termsFile |
     ForEach-Object { $_.Trim() } |
     Where-Object { $_ -ne "" }
@@ -10,25 +10,56 @@ $terms = Get-Content $termsFile |
 # Import CSV
 $rows = Import-Csv $csvFile
 
-# Collect matching rows
-$matches = foreach ($row in $rows) {
-    $found = $false
+# Get column 13 name (1-based index)
+$column13Name = $rows[0].PSObject.Properties.Name[12]
 
+# Prepare dictionary: term -> list of values
+$results = @{}
+foreach ($term in $terms) {
+    $results[$term] = @()
+}
+
+# Process rows
+foreach ($row in $rows) {
     foreach ($term in $terms) {
-        foreach ($prop in $row.PSObject.Properties) {
-            $value = [string]$prop.Value
+        $found = $false
 
-            if ($value -match [regex]::Escape($term)) {
+        foreach ($prop in $row.PSObject.Properties) {
+            if ([string]$prop.Value -match [regex]::Escape($term)) {
                 $found = $true
                 break
             }
         }
 
-        if ($found) { break }
-    }
+        if ($found) {
+            $col13 = [string]$row.$column13Name
+            $splitValues = $col13 -split ';'
 
-    if ($found) { $row }
+            foreach ($val in $splitValues) {
+                if ($val.Trim()) {
+                    $results[$term] += $val.Trim()
+                }
+            }
+        }
+    }
 }
 
-$matches | Export-Csv $outFile -NoTypeInformation
-Write-Host "Done. Matches written to $outFile"
+# Find max number of rows needed
+$maxRows = ($results.Values | ForEach-Object { $_.Count } | Measure-Object -Maximum).Maximum
+
+# Build output rows
+$output = for ($i = 0; $i -lt $maxRows; $i++) {
+    $row = [ordered]@{}
+    foreach ($term in $terms) {
+        $row[$term] = if ($i -lt $results[$term].Count) {
+            $results[$term][$i]
+        } else {
+            ""
+        }
+    }
+    [PSCustomObject]$row
+}
+
+# Export
+$output | Export-Csv $outFile -NoTypeInformation
+Write-Host "Done. Pivoted output written to $outFile"
