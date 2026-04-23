@@ -1,0 +1,25 @@
+$termsFile = "C:\path\to\terms.txt"
+$csvFile   = "C:\path\to\input.csv"
+$outFile   = "C:\path\to\matches.csv"
+
+# Read terms, trim whitespace, skip blank lines
+$terms = Get-Content $termsFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+
+# Import CSV
+$rows = Import-Csv $csvFile
+
+# Find rows where any cell contains any term
+$matches = foreach ($row in $rows) {
+    $values = $row.PSObject.Properties.Value
+    foreach ($term in $terms) {
+        if ($values -match [regex]::Escape($term)) {
+            $row
+            break
+        }
+    }
+}
+
+# Remove duplicate rows if a row matched multiple terms
+$matches | Select-Object -Unique | Export-Csv $outFile -NoTypeInformation
+
+Write-Host "Done. Matches written to $outFile"
