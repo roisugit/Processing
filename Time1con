@@ -1,0 +1,229 @@
+############################################################
+# One-condition time-series analysis with room averaging
+# Control only, 3 time points, 3 biological replicates
+# edgeR normalization + maSigPro
+############################################################
+
+library(edgeR)
+library(maSigPro)
+library(dplyr)
+
+############################################################
+# 1. Load data
+############################################################
+
+counts <- read.csv("counts.csv", row.names = 1, check.names = FALSE)
+metadata <- read.csv("metadata.csv", stringsAsFactors = FALSE)
+
+############################################################
+# 2. Match metadata to counts
+############################################################
+
+metadata <- metadata[match(colnames(counts), metadata$sample), ]
+stopifnot(all(metadata$sample == colnames(counts)))
+
+metadata$time <- as.numeric(metadata$time)
+metadata$biorep <- as.factor(metadata$biorep)
+metadata$condition <- as.factor(metadata$condition)
+metadata$room <- as.factor(metadata$room)
+
+############################################################
+# 3. Average rooms within each biological replicate
+############################################################
+
+metadata$avg_sample <- paste(
+  metadata$condition,
+  paste0("T", metadata$time),
+  paste0("R", metadata$biorep),
+  sep = "_"
+)
+
+avg_counts <- sapply(unique(metadata$avg_sample), function(s) {
+  samples_to_average <- metadata$sample[metadata$avg_sample == s]
+
+  rowMeans(
+    counts[, samples_to_average, drop = FALSE],
+    na.rm = TRUE
+  )
+})
+
+avg_counts <- as.data.frame(avg_counts)
+
+avg_metadata <- metadata %>%
+  distinct(avg_sample, time, biorep, condition) %>%
+  rename(
+    sample = avg_sample,
+    replicate = biorep
+  )
+
+avg_metadata <- avg_metadata[match(colnames(avg_counts), avg_metadata$sample), ]
+stopifnot(all(avg_metadata$sample == colnames(avg_counts)))
+
+counts <- avg_counts
+metadata <- avg_metadata
+
+metadata$time <- as.numeric(metadata$time)
+metadata$replicate <- as.factor(metadata$replicate)
+metadata$condition <- as.factor(metadata$condition)
+
+write.csv(metadata, "metadata_after_room_averaging.csv", row.names = FALSE)
+write.csv(counts, "counts_after_room_averaging.csv")
+
+############################################################
+# 4. edgeR filtering and TMM normalization
+############################################################
+
+dge <- DGEList(counts = counts)
+
+keep <- filterByExpr(dge)
+dge <- dge[keep, , keep.lib.sizes = FALSE]
+
+dge <- calcNormFactors(dge, method = "TMM")
+
+expr <- cpm(dge, log = TRUE, prior.count = 1)
+expr <- as.data.frame(expr)
+
+write.csv(expr, "logCPM_after_edgeR_normalization.csv")
+
+############################################################
+# 5. Build one-condition maSigPro design
+############################################################
+
+# maSigPro still expects a group column.
+# Since this is Control only, this column is always 1.
+
+edesign <- data.frame(
+  Time = metadata$time,
+  Replicate = metadata$replicate,
+  Control = 1
+)
+
+rownames(edesign) <- metadata$sample
+
+write.csv(edesign, "maSigPro_edesign_matrix.csv")
+
+############################################################
+# 6. maSigPro design matrix
+############################################################
+
+# For 3 time points, degree = 1 is recommended.
+
+design <- make.design.matrix(
+  edesign,
+  degree = 1,
+  time.col = 1,
+  repl.col = 2,
+  group.cols = 3
+)
+
+write.csv(design$dis, "maSigPro_design_matrix.csv")
+
+############################################################
+# 7. Safety checks
+############################################################
+
+expr <- expr[apply(expr, 1, function(x) all(is.finite(x))), ]
+expr <- expr[, rownames(design$dis)]
+
+stopifnot(all(colnames(expr) == rownames(design$dis)))
+
+############################################################
+# 8. maSigPro regression
+############################################################
+
+fit1 <- p.vector(
+  data = expr,
+  design = design,
+  Q = 0.05,
+  MT.adjust = "BH",
+  counts = FALSE
+)
+
+if (length(fit1$SELEC) == 0) {
+  stop("No significant genes found. Try Q = 0.1 or rsq = 0.4.")
+}
+
+fit2 <- T.fit(
+  fit1,
+  step.method = "backward",
+  alfa = 0.05
+)
+
+sig_genes <- get.siggenes(
+  fit2,
+  rsq = 0.5,
+  vars = "all"
+)
+
+############################################################
+# 9. Save outputs
+############################################################
+
+saveRDS(sig_genes, "maSigPro_results_full_object.rds")
+saveRDS(fit2, "maSigPro_Tfit_object.rds")
+
+write.csv(
+  as.data.frame(sig_genes$summary),
+  "maSigPro_DEG_gene_list.csv",
+  row.names = FALSE
+)
+
+if (!is.null(fit2$sol)) {
+  write.csv(
+    fit2$sol,
+    "maSigPro_model_coefficients_all_selected_genes.csv"
+  )
+}
+
+if (!is.null(fit2$variables)) {
+  write.csv(
+    fit2$variables,
+    "maSigPro_model_variables.csv"
+  )
+}
+
+if (!is.null(sig_genes$sig.genes)) {
+  saveRDS(
+    sig_genes$sig.genes,
+    "maSigPro_DEGs_full_object.rds"
+  )
+}
+
+############################################################
+# 10. Add up/down trend calls
+############################################################
+
+coef_table <- fit2$sol
+
+# The time coefficient may be named "Control.Time" or similar.
+# This tries to find the time/slope column automatically.
+
+time_col <- grep("Time", colnames(coef_table), value = TRUE)
+
+if (length(time_col) > 0) {
+
+  slope_col <- time_col[1]
+
+  trend_table <- data.frame(
+    gene = rownames(coef_table),
+    time_slope = coef_table[, slope_col],
+    trend = ifelse(coef_table[, slope_col] > 0, "Up_over_time", "Down_over_time")
+  )
+
+  write.csv(
+    trend_table,
+    "maSigPro_up_down_over_time.csv",
+    row.names = FALSE
+  )
+
+} else {
+  warning("No Time coefficient column found in fit2$sol.")
+}
+
+############################################################
+# Done
+############################################################
+
+message("Analysis complete.")
+message("Main DEG list: maSigPro_DEG_gene_list.csv")
+message("Up/down calls: maSigPro_up_down_over_time.csv")
