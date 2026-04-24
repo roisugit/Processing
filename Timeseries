@@ -1,17 +1,16 @@
 ############################################################
 # Time-series DEG analysis using room averaging + edgeR + maSigPro
-# Recommended version for 3 time points: degree = 1
+# For 3 time points: degree = 1
 ############################################################
 
 # Install once if needed:
 # if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
 # BiocManager::install(c("edgeR", "maSigPro"))
-# install.packages(c("dplyr", "tibble"))
+# install.packages("dplyr")
 
 library(edgeR)
 library(maSigPro)
 library(dplyr)
-library(tibble)
 
 ############################################################
 # 1. Load counts and metadata
@@ -75,7 +74,7 @@ avg_metadata <- avg_metadata[match(colnames(avg_counts), avg_metadata$sample), ]
 stopifnot(all(avg_metadata$sample == colnames(avg_counts)))
 
 ############################################################
-# 4. Use averaged counts from this point onward
+# 4. Use averaged counts from here onward
 ############################################################
 
 counts <- avg_counts
@@ -85,16 +84,8 @@ metadata$time <- as.numeric(metadata$time)
 metadata$replicate <- as.factor(metadata$replicate)
 metadata$condition <- as.factor(metadata$condition)
 
-write.csv(
-  metadata,
-  "metadata_after_room_averaging.csv",
-  row.names = FALSE
-)
-
-write.csv(
-  counts,
-  "counts_after_room_averaging.csv"
-)
+write.csv(metadata, "metadata_after_room_averaging.csv", row.names = FALSE)
+write.csv(counts, "counts_after_room_averaging.csv")
 
 ############################################################
 # 5. edgeR filtering and TMM normalization
@@ -109,15 +100,14 @@ dge <- dge[keep, , keep.lib.sizes = FALSE]
 
 dge <- calcNormFactors(dge, method = "TMM")
 
+# logCPM is used for maSigPro below.
+# Because rooms were averaged, counts may be non-integers.
 expr <- cpm(dge, log = TRUE, prior.count = 1)
 
-write.csv(
-  expr,
-  "logCPM_after_edgeR_normalization.csv"
-)
+write.csv(expr, "logCPM_after_edgeR_normalization.csv")
 
 ############################################################
-# 6. Build maSigPro design table
+# 6. Build maSigPro experimental design
 ############################################################
 
 condition_matrix <- model.matrix(~ 0 + condition, data = metadata)
@@ -131,17 +121,11 @@ edesign <- data.frame(
 
 rownames(edesign) <- metadata$sample
 
-write.csv(
-  edesign,
-  "maSigPro_edesign_matrix.csv"
-)
+write.csv(edesign, "maSigPro_edesign_matrix.csv")
 
 ############################################################
 # 7. Create maSigPro regression design matrix
 ############################################################
-
-# For 3 time points, degree = 1 is recommended.
-# This models linear time trends instead of curved trajectories.
 
 design <- make.design.matrix(
   edesign,
@@ -151,24 +135,40 @@ design <- make.design.matrix(
   group.cols = 3:ncol(edesign)
 )
 
-write.csv(
-  design$dis,
-  "maSigPro_design_matrix.csv"
-)
+write.csv(design$dis, "maSigPro_design_matrix.csv")
 
 ############################################################
-# 8. First regression step
+# 8. Safety checks before p.vector()
+############################################################
+
+expr <- as.data.frame(expr)
+
+# Remove genes with NA, NaN, or Inf
+expr <- expr[apply(expr, 1, function(x) all(is.finite(x))), ]
+
+# Match expression columns to design rows
+expr <- expr[, rownames(design$dis)]
+
+stopifnot(all(colnames(expr) == rownames(design$dis)))
+
+############################################################
+# 9. First maSigPro regression step
 ############################################################
 
 fit1 <- p.vector(
-  expr,
-  design,
+  data = expr,
+  design = design,
   Q = 0.05,
-  MT.adjust = "BH"
+  MT.adjust = "BH",
+  counts = FALSE
 )
 
+if (length(fit1$SELEC) == 0) {
+  stop("No significant genes found by p.vector(). Try Q = 0.1 or check your design.")
+}
+
 ############################################################
-# 9. Stepwise regression model selection
+# 10. Stepwise regression model selection
 ############################################################
 
 fit2 <- T.fit(
@@ -178,7 +178,7 @@ fit2 <- T.fit(
 )
 
 ############################################################
-# 10. Extract significant time-series genes
+# 11. Extract significant time-series genes
 ############################################################
 
 sig_genes <- get.siggenes(
@@ -188,7 +188,7 @@ sig_genes <- get.siggenes(
 )
 
 ############################################################
-# 11. Save maSigPro output tables
+# 12. Save output files
 ############################################################
 
 write.csv(
@@ -196,21 +196,10 @@ write.csv(
   "maSigPro_significant_genes_summary.csv"
 )
 
-# Save full result object
-saveRDS(
-  sig_genes,
-  "maSigPro_results.rds"
-)
-
-############################################################
-# 12. Optional: save significant gene lists if available
-############################################################
+saveRDS(sig_genes, "maSigPro_results.rds")
 
 if (!is.null(sig_genes$sig.genes)) {
-  saveRDS(
-    sig_genes$sig.genes,
-    "maSigPro_sig_genes_object.rds"
-  )
+  saveRDS(sig_genes$sig.genes, "maSigPro_sig_genes_object.rds")
 }
 
 ############################################################
