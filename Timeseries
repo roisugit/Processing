@@ -248,3 +248,23 @@ if (!is.null(sig_genes$sig.genes) && length(sig_genes$sig.genes) > 0) {
 
 
 
+
+############################################################
+# Proper DEG table extraction
+############################################################
+
+# Extract significant genes table
+deg_table <- sig_genes$sig.genes
+
+# If it's a list, bind into a dataframe
+if (is.list(deg_table)) {
+  deg_table <- do.call(rbind, deg_table)
+}
+
+write.csv(
+  deg_table,
+  "maSigPro_DEGs_full_table.csv"
+)
+
+
+
