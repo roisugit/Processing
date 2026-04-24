@@ -1,0 +1,233 @@
+############################################################
+# Time-series DEG analysis using room averaging + edgeR + maSigPro
+# Recommended version for 3 time points: degree = 1
+############################################################
+
+# Install once if needed:
+# if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+# BiocManager::install(c("edgeR", "maSigPro"))
+# install.packages(c("dplyr", "tibble"))
+
+library(edgeR)
+library(maSigPro)
+library(dplyr)
+library(tibble)
+
+############################################################
+# 1. Load counts and metadata
+############################################################
+
+counts <- read.csv(
+  "counts.csv",
+  row.names = 1,
+  check.names = FALSE
+)
+
+metadata <- read.csv(
+  "metadata.csv",
+  stringsAsFactors = FALSE
+)
+
+############################################################
+# 2. Check sample matching
+############################################################
+
+metadata <- metadata[match(colnames(counts), metadata$sample), ]
+
+stopifnot(all(metadata$sample == colnames(counts)))
+
+metadata$time <- as.numeric(metadata$time)
+metadata$biorep <- as.factor(metadata$biorep)
+metadata$condition <- as.factor(metadata$condition)
+metadata$room <- as.factor(metadata$room)
+
+############################################################
+# 3. Average rooms within each biological replicate
+############################################################
+
+metadata$avg_sample <- paste(
+  metadata$condition,
+  paste0("T", metadata$time),
+  paste0("R", metadata$biorep),
+  sep = "_"
+)
+
+avg_counts <- sapply(unique(metadata$avg_sample), function(s) {
+  samples_to_average <- metadata$sample[metadata$avg_sample == s]
+
+  rowMeans(
+    counts[, samples_to_average, drop = FALSE],
+    na.rm = TRUE
+  )
+})
+
+avg_counts <- as.data.frame(avg_counts)
+
+avg_metadata <- metadata %>%
+  distinct(avg_sample, time, biorep, condition) %>%
+  rename(
+    sample = avg_sample,
+    replicate = biorep
+  )
+
+avg_metadata <- avg_metadata[match(colnames(avg_counts), avg_metadata$sample), ]
+
+stopifnot(all(avg_metadata$sample == colnames(avg_counts)))
+
+############################################################
+# 4. Use averaged counts from this point onward
+############################################################
+
+counts <- avg_counts
+metadata <- avg_metadata
+
+metadata$time <- as.numeric(metadata$time)
+metadata$replicate <- as.factor(metadata$replicate)
+metadata$condition <- as.factor(metadata$condition)
+
+write.csv(
+  metadata,
+  "metadata_after_room_averaging.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  counts,
+  "counts_after_room_averaging.csv"
+)
+
+############################################################
+# 5. edgeR filtering and TMM normalization
+############################################################
+
+group <- metadata$condition
+
+dge <- DGEList(counts = counts, group = group)
+
+keep <- filterByExpr(dge, group = group)
+dge <- dge[keep, , keep.lib.sizes = FALSE]
+
+dge <- calcNormFactors(dge, method = "TMM")
+
+expr <- cpm(dge, log = TRUE, prior.count = 1)
+
+write.csv(
+  expr,
+  "logCPM_after_edgeR_normalization.csv"
+)
+
+############################################################
+# 6. Build maSigPro design table
+############################################################
+
+condition_matrix <- model.matrix(~ 0 + condition, data = metadata)
+colnames(condition_matrix) <- levels(metadata$condition)
+
+edesign <- data.frame(
+  Time = metadata$time,
+  Replicate = metadata$replicate,
+  condition_matrix
+)
+
+rownames(edesign) <- metadata$sample
+
+write.csv(
+  edesign,
+  "maSigPro_edesign_matrix.csv"
+)
+
+############################################################
+# 7. Create maSigPro regression design matrix
+############################################################
+
+# For 3 time points, degree = 1 is recommended.
+# This models linear time trends instead of curved trajectories.
+
+design <- make.design.matrix(
+  edesign,
+  degree = 1,
+  time.col = 1,
+  repl.col = 2,
+  group.cols = 3:ncol(edesign)
+)
+
+write.csv(
+  design$dis,
+  "maSigPro_design_matrix.csv"
+)
+
+############################################################
+# 8. First regression step
+############################################################
+
+fit1 <- p.vector(
+  expr,
+  design,
+  Q = 0.05,
+  MT.adjust = "BH"
+)
+
+############################################################
+# 9. Stepwise regression model selection
+############################################################
+
+fit2 <- T.fit(
+  fit1,
+  step.method = "backward",
+  alfa = 0.05
+)
+
+############################################################
+# 10. Extract significant time-series genes
+############################################################
+
+sig_genes <- get.siggenes(
+  fit2,
+  rsq = 0.5,
+  vars = "all"
+)
+
+############################################################
+# 11. Save maSigPro output tables
+############################################################
+
+write.csv(
+  sig_genes$summary,
+  "maSigPro_significant_genes_summary.csv"
+)
+
+# Save full result object
+saveRDS(
+  sig_genes,
+  "maSigPro_results.rds"
+)
+
+############################################################
+# 12. Optional: save significant gene lists if available
+############################################################
+
+if (!is.null(sig_genes$sig.genes)) {
+  saveRDS(
+    sig_genes$sig.genes,
+    "maSigPro_sig_genes_object.rds"
+  )
+}
+
+############################################################
+# 13. Optional profile plot
+############################################################
+
+pdf("maSigPro_gene_profiles.pdf", width = 10, height = 8)
+
+see.genes(
+  sig_genes$sig.genes,
+  show.fit = TRUE,
+  dis = design$dis,
+  cluster.method = "hclust"
+)
+
+dev.off()
+
+############################################################
+# Done
+############################################################
