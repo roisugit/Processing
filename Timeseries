@@ -1,3 +1,62 @@
+
+############################################################
+# 11. Save DEG outputs properly — safer version
+############################################################
+
+# Save complete objects first
+saveRDS(sig_genes, "maSigPro_results_full_object.rds")
+saveRDS(fit2, "maSigPro_Tfit_object.rds")
+
+# A. Simple DEG gene list
+deg_gene_list <- as.data.frame(sig_genes$summary)
+write.csv(
+  deg_gene_list,
+  "maSigPro_DEG_gene_list.csv",
+  row.names = FALSE
+)
+
+# B. Save sig.genes object as RDS without forcing it into a table
+if (!is.null(sig_genes$sig.genes)) {
+  saveRDS(
+    sig_genes$sig.genes,
+    "maSigPro_DEGs_full_object.rds"
+  )
+}
+
+# C. Save each sig.genes component as a separate CSV
+if (!is.null(sig_genes$sig.genes) && is.list(sig_genes$sig.genes)) {
+
+  for (nm in names(sig_genes$sig.genes)) {
+
+    obj <- sig_genes$sig.genes[[nm]]
+
+    safe_nm <- gsub("[^A-Za-z0-9_]", "_", nm)
+
+    if (is.data.frame(obj) || is.matrix(obj)) {
+      write.csv(
+        obj,
+        paste0("maSigPro_DEGs_", safe_nm, ".csv")
+      )
+    }
+  }
+}
+
+# D. Save model coefficients — usually most useful
+if (!is.null(fit2$sol)) {
+  write.csv(
+    fit2$sol,
+    "maSigPro_model_coefficients_all_selected_genes.csv"
+  )
+}
+
+# E. Save variables table if present
+if (!is.null(fit2$variables)) {
+  write.csv(
+    fit2$variables,
+    "maSigPro_model_variables.csv"
+  )
+}
+
 ############################################################
 # Room averaging + edgeR normalization + maSigPro
 # For 3 time points: degree = 1
