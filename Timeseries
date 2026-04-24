@@ -1,38 +1,24 @@
 ############################################################
-# Time-series DEG analysis using room averaging + edgeR + maSigPro
+# Room averaging + edgeR normalization + maSigPro
 # For 3 time points: degree = 1
 ############################################################
-
-# Install once if needed:
-# if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-# BiocManager::install(c("edgeR", "maSigPro"))
-# install.packages("dplyr")
 
 library(edgeR)
 library(maSigPro)
 library(dplyr)
 
 ############################################################
-# 1. Load counts and metadata
+# 1. Load data
 ############################################################
 
-counts <- read.csv(
-  "counts.csv",
-  row.names = 1,
-  check.names = FALSE
-)
-
-metadata <- read.csv(
-  "metadata.csv",
-  stringsAsFactors = FALSE
-)
+counts <- read.csv("counts.csv", row.names = 1, check.names = FALSE)
+metadata <- read.csv("metadata.csv", stringsAsFactors = FALSE)
 
 ############################################################
-# 2. Check sample matching
+# 2. Match metadata to count columns
 ############################################################
 
 metadata <- metadata[match(colnames(counts), metadata$sample), ]
-
 stopifnot(all(metadata$sample == colnames(counts)))
 
 metadata$time <- as.numeric(metadata$time)
@@ -53,11 +39,7 @@ metadata$avg_sample <- paste(
 
 avg_counts <- sapply(unique(metadata$avg_sample), function(s) {
   samples_to_average <- metadata$sample[metadata$avg_sample == s]
-
-  rowMeans(
-    counts[, samples_to_average, drop = FALSE],
-    na.rm = TRUE
-  )
+  rowMeans(counts[, samples_to_average, drop = FALSE], na.rm = TRUE)
 })
 
 avg_counts <- as.data.frame(avg_counts)
@@ -70,12 +52,7 @@ avg_metadata <- metadata %>%
   )
 
 avg_metadata <- avg_metadata[match(colnames(avg_counts), avg_metadata$sample), ]
-
 stopifnot(all(avg_metadata$sample == colnames(avg_counts)))
-
-############################################################
-# 4. Use averaged counts from here onward
-############################################################
 
 counts <- avg_counts
 metadata <- avg_metadata
@@ -88,26 +65,23 @@ write.csv(metadata, "metadata_after_room_averaging.csv", row.names = FALSE)
 write.csv(counts, "counts_after_room_averaging.csv")
 
 ############################################################
-# 5. edgeR filtering and TMM normalization
+# 4. edgeR filtering and TMM normalization
 ############################################################
 
-group <- metadata$condition
+dge <- DGEList(counts = counts, group = metadata$condition)
 
-dge <- DGEList(counts = counts, group = group)
-
-keep <- filterByExpr(dge, group = group)
+keep <- filterByExpr(dge, group = metadata$condition)
 dge <- dge[keep, , keep.lib.sizes = FALSE]
 
 dge <- calcNormFactors(dge, method = "TMM")
 
-# logCPM is used for maSigPro below.
-# Because rooms were averaged, counts may be non-integers.
 expr <- cpm(dge, log = TRUE, prior.count = 1)
+expr <- as.data.frame(expr)
 
 write.csv(expr, "logCPM_after_edgeR_normalization.csv")
 
 ############################################################
-# 6. Build maSigPro experimental design
+# 5. Build maSigPro experimental design
 ############################################################
 
 condition_matrix <- model.matrix(~ 0 + condition, data = metadata)
@@ -124,7 +98,7 @@ rownames(edesign) <- metadata$sample
 write.csv(edesign, "maSigPro_edesign_matrix.csv")
 
 ############################################################
-# 7. Create maSigPro regression design matrix
+# 6. maSigPro design matrix
 ############################################################
 
 design <- make.design.matrix(
@@ -138,21 +112,16 @@ design <- make.design.matrix(
 write.csv(design$dis, "maSigPro_design_matrix.csv")
 
 ############################################################
-# 8. Safety checks before p.vector()
+# 7. Safety checks
 ############################################################
 
-expr <- as.data.frame(expr)
-
-# Remove genes with NA, NaN, or Inf
 expr <- expr[apply(expr, 1, function(x) all(is.finite(x))), ]
-
-# Match expression columns to design rows
 expr <- expr[, rownames(design$dis)]
 
 stopifnot(all(colnames(expr) == rownames(design$dis)))
 
 ############################################################
-# 9. First maSigPro regression step
+# 8. maSigPro first regression step
 ############################################################
 
 fit1 <- p.vector(
@@ -164,11 +133,11 @@ fit1 <- p.vector(
 )
 
 if (length(fit1$SELEC) == 0) {
-  stop("No significant genes found by p.vector(). Try Q = 0.1 or check your design.")
+  stop("No significant genes found. Try Q = 0.1 or rsq = 0.4.")
 }
 
 ############################################################
-# 10. Stepwise regression model selection
+# 9. Stepwise regression
 ############################################################
 
 fit2 <- T.fit(
@@ -178,7 +147,7 @@ fit2 <- T.fit(
 )
 
 ############################################################
-# 11. Extract significant time-series genes
+# 10. Extract significant genes
 ############################################################
 
 sig_genes <- get.siggenes(
@@ -187,84 +156,69 @@ sig_genes <- get.siggenes(
   vars = "all"
 )
 
+saveRDS(sig_genes, "maSigPro_results_full_object.rds")
+
 ############################################################
-# 12. Save output files
+# 11. Save DEG outputs properly
 ############################################################
 
+# A. Simple significant gene list
+deg_gene_list <- sig_genes$summary
 write.csv(
-  sig_genes$summary,
-  "maSigPro_significant_genes_summary.csv"
+  deg_gene_list,
+  "maSigPro_DEG_gene_list.csv",
+  row.names = FALSE
 )
 
-saveRDS(sig_genes, "maSigPro_results.rds")
+# B. Full significant gene table/object if available
+deg_full <- sig_genes$sig.genes
 
-if (!is.null(sig_genes$sig.genes)) {
-  saveRDS(sig_genes$sig.genes, "maSigPro_sig_genes_object.rds")
-}
+if (!is.null(deg_full)) {
 
-############################################################
-# 13. Optional profile plot
-############################################################
+  if (is.list(deg_full)) {
+    deg_full_table <- do.call(rbind, lapply(deg_full, function(x) {
+      if (is.data.frame(x) || is.matrix(x)) {
+        return(as.data.frame(x))
+      } else {
+        return(data.frame(gene = as.character(x)))
+      }
+    }))
+  } else {
+    deg_full_table <- as.data.frame(deg_full)
+  }
 
-pdf("maSigPro_gene_profiles.pdf", width = 10, height = 8)
-
-see.genes(
-  sig_genes$sig.genes,
-  show.fit = TRUE,
-  dis = design$dis,
-  cluster.method = "hclust"
-)
-
-dev.off()
-
-############################################################
-# Done
-############################################################
-
-
-############################################################
-# 13. Optional profile plot — safer version
-############################################################
-
-if (!is.null(sig_genes$sig.genes) && length(sig_genes$sig.genes) > 0) {
-
-  pdf("maSigPro_gene_profiles.pdf", width = 10, height = 8)
-
-  try(
-    see.genes(
-      sig_genes$sig.genes,
-      show.fit = FALSE,
-      dis = design$dis,
-      cluster.method = "hclust"
-    ),
-    silent = FALSE
+  write.csv(
+    deg_full_table,
+    "maSigPro_DEGs_full_table.csv"
   )
 
-  dev.off()
-
-} else {
-  message("No sig_genes$sig.genes object available for plotting.")
+  saveRDS(
+    deg_full,
+    "maSigPro_DEGs_full_object.rds"
+  )
 }
 
-
-
-
-############################################################
-# Proper DEG table extraction
-############################################################
-
-# Extract significant genes table
-deg_table <- sig_genes$sig.genes
-
-# If it's a list, bind into a dataframe
-if (is.list(deg_table)) {
-  deg_table <- do.call(rbind, deg_table)
+# C. Model coefficients from T.fit, often the most useful table
+if (!is.null(fit2$sol)) {
+  write.csv(
+    fit2$sol,
+    "maSigPro_model_coefficients_all_selected_genes.csv"
+  )
 }
 
-write.csv(
-  deg_table,
-  "maSigPro_DEGs_full_table.csv"
-)
+# D. R-squared values if available
+if (!is.null(fit2$variables)) {
+  write.csv(
+    fit2$variables,
+    "maSigPro_model_variables.csv"
+  )
+}
 
+############################################################
+# 12. Done
+############################################################
 
-
+message("Analysis complete.")
+message("Main DEG gene list: maSigPro_DEG_gene_list.csv")
+message("Full DEG table/object: maSigPro_DEGs_full_table.csv and maSigPro_DEGs_full_object.rds")
+message("Model coefficients: maSigPro_model_coefficients_all_selected_genes.csv")
