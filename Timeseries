@@ -220,3 +220,31 @@ dev.off()
 ############################################################
 # Done
 ############################################################
+
+
+############################################################
+# 13. Optional profile plot — safer version
+############################################################
+
+if (!is.null(sig_genes$sig.genes) && length(sig_genes$sig.genes) > 0) {
+
+  pdf("maSigPro_gene_profiles.pdf", width = 10, height = 8)
+
+  try(
+    see.genes(
+      sig_genes$sig.genes,
+      show.fit = FALSE,
+      dis = design$dis,
+      cluster.method = "hclust"
+    ),
+    silent = FALSE
+  )
+
+  dev.off()
+
+} else {
+  message("No sig_genes$sig.genes object available for plotting.")
+}
+
+
+
