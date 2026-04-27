@@ -1,0 +1,43 @@
+# Load required libraries
+library(tidyverse)
+
+# Read the TSV file
+# Replace with your actual file path
+df <- read_tsv("your_file.tsv")
+
+# Add row IDs and create panel labels including COUNT
+df <- df %>%
+  mutate(
+    row_id = row_number(),
+    panel_label = paste0("Row ", row_id, "\nCount: ", COUNT)
+  )
+
+# Reshape from wide to long format
+long_df <- df %>%
+  pivot_longer(
+    cols = c(D0, D2, D7),
+    names_to = "day",
+    values_to = "value"
+  ) %>%
+  mutate(
+    day_num = as.numeric(str_remove(day, "D"))
+  )
+
+# Create the paneled dot + line plot
+p <- ggplot(long_df, aes(x = day_num, y = value, group = row_id)) +
+  geom_line() +
+  geom_point(size = 2) +
+  facet_wrap(~ panel_label, ncol = 6) +
+  scale_x_continuous(breaks = c(0, 2, 7)) +
+  labs(
+    x = "Day",
+    y = "Value",
+    title = "Day 0, 2, and 7 Values by Row"
+  ) +
+  theme_bw()
+
+# Print plot
+print(p)
+
+# Optional: save to file
+ggsave("paneled_plot.png", plot = p, width = 12, height = 10, dpi = 300)
