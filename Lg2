@@ -1,0 +1,135 @@
+library(tidyverse)
+
+df <- read_tsv("your_file.tsv")
+
+# Rename this if your 5th column has a different name
+bg_col <- names(df)[5]
+
+df <- df %>%
+  mutate(
+    row_id = row_number(),
+    panel_label = paste0("Count: ", COUNT),
+    panel_id = factor(row_id, levels = row_id)
+  )
+
+long_df <- df %>%
+  pivot_longer(
+    cols = c(D0, D2, D7),
+    names_to = "day",
+    values_to = "value"
+  ) %>%
+  mutate(day_num = as.numeric(str_remove(day, "D")))
+
+count_labels <- setNames(df$panel_label, df$panel_id)
+
+# Parse semicolon-delimited background values.
+# Assumes values are ordered as D0;D2;D7;D0;D2;D7;...
+bg_long <- df %>%
+  select(row_id, panel_id, bg_raw = all_of(bg_col)) %>%
+  mutate(bg_values = str_split(bg_raw, ";")) %>%
+  unnest_longer(bg_values, indices_to = "idx") %>%
+  mutate(
+    bg_value = as.numeric(bg_values),
+    day_num = rep(c(0, 2, 7), length.out = n()),
+    bg_line_id = ceiling(idx / 3)
+  ) %>%
+  filter(!is.na(bg_value))
+
+
+p_gray <- ggplot() +
+  geom_line(
+    data = bg_long,
+    aes(x = day_num, y = bg_value, group = interaction(row_id, bg_line_id)),
+    color = "gray70",
+    alpha = 0.35,
+    linewidth = 0.3
+  ) +
+  geom_line(
+    data = long_df,
+    aes(x = day_num, y = value, group = row_id),
+    linewidth = 0.8
+  ) +
+  geom_point(
+    data = long_df,
+    aes(x = day_num, y = value),
+    size = 2
+  ) +
+  facet_wrap(
+    ~ panel_id,
+    ncol = 6,
+    labeller = labeller(panel_id = count_labels)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 7)) +
+  labs(
+    x = "Day",
+    y = "Value",
+    title = "Day 0, 2, and 7 Values with Background Lines"
+  ) +
+  theme_bw()
+
+print(p_gray)
+
+ggsave(
+  "paneled_plot_with_background_lines.png",
+  plot = p_gray,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+
+bg_ci <- bg_long %>%
+  group_by(row_id, panel_id, day_num) %>%
+  summarise(
+    bg_median = median(bg_value, na.rm = TRUE),
+    bg_low = quantile(bg_value, 0.025, na.rm = TRUE),
+    bg_high = quantile(bg_value, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p_ci <- ggplot() +
+  geom_ribbon(
+    data = bg_ci,
+    aes(x = day_num, ymin = bg_low, ymax = bg_high, group = row_id),
+    fill = "gray70",
+    alpha = 0.35
+  ) +
+  geom_line(
+    data = bg_ci,
+    aes(x = day_num, y = bg_median, group = row_id),
+    color = "gray50",
+    linewidth = 0.5
+  ) +
+  geom_line(
+    data = long_df,
+    aes(x = day_num, y = value, group = row_id),
+    linewidth = 0.8
+  ) +
+  geom_point(
+    data = long_df,
+    aes(x = day_num, y = value),
+    size = 2
+  ) +
+  facet_wrap(
+    ~ panel_id,
+    ncol = 6,
+    labeller = labeller(panel_id = count_labels)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 7)) +
+  labs(
+    x = "Day",
+    y = "Value",
+    title = "Day 0, 2, and 7 Values with Background 95% Confidence Region"
+  ) +
+  theme_bw()
+
+print(p_ci)
+
+ggsave(
+  "paneled_plot_with_background_ci.png",
+  plot = p_ci,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
