@@ -1,0 +1,168 @@
+# Load required libraries
+library(tidyverse)
+
+# Read the TSV file
+df <- read_tsv("your_file.tsv")
+
+# Column references (by position)
+bg_col <- names(df)[5]   # background values
+sig_col <- names(df)[6]  # significance flags
+
+# Add unique panel ID
+df <- df %>%
+  mutate(
+    row_id = row_number(),
+    panel_label = paste0("Count: ", COUNT),
+    panel_id = factor(row_id, levels = row_id)
+  )
+
+# Main D0/D2/D7 data
+long_df <- df %>%
+  pivot_longer(
+    cols = c(D0, D2, D7),
+    names_to = "day",
+    values_to = "value"
+  ) %>%
+  mutate(day_num = as.numeric(str_remove(day, "D")))
+
+# Facet labels
+count_labels <- setNames(df$panel_label, df$panel_id)
+
+# -----------------------------
+# Background parsing (col 5)
+# Assumes: D0;D2;D7 repeating
+# -----------------------------
+bg_long <- df %>%
+  select(row_id, panel_id, bg_raw = all_of(bg_col)) %>%
+  mutate(bg_values = str_split(bg_raw, ";")) %>%
+  unnest_longer(bg_values, indices_to = "idx") %>%
+  mutate(
+    bg_value = as.numeric(str_trim(bg_values)),
+    day_num = rep(c(0, 2, 7), length.out = n()),
+    bg_line_id = ceiling(idx / 3)
+  ) %>%
+  filter(!is.na(bg_value))
+
+# -----------------------------
+# Significance parsing (col 6)
+# Assumes: pairs per line
+# D0→D2 ; D2→D7 repeating
+# -----------------------------
+sig_long <- df %>%
+  select(row_id, sig_raw = all_of(sig_col)) %>%
+  mutate(sig_values = str_split(sig_raw, ";")) %>%
+  unnest_longer(sig_values, indices_to = "sig_idx") %>%
+  mutate(
+    sig = as.numeric(str_trim(sig_values)),
+    bg_line_id = ceiling(sig_idx / 2),
+    segment = if_else(sig_idx %% 2 == 1, "D0_D2", "D2_D7")
+  ) %>%
+  filter(sig == 1)
+
+# -----------------------------
+# Build background segments
+# -----------------------------
+bg_segments <- bg_long %>%
+  arrange(row_id, bg_line_id, day_num) %>%
+  group_by(row_id, panel_id, bg_line_id) %>%
+  mutate(
+    x = day_num,
+    y = bg_value,
+    xend = lead(day_num),
+    yend = lead(bg_value),
+    segment = case_when(
+      day_num == 0 & xend == 2 ~ "D0_D2",
+      day_num == 2 & xend == 7 ~ "D2_D7",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(segment))
+
+# Keep only significant segments
+sig_segments <- bg_segments %>%
+  inner_join(
+    sig_long %>% select(row_id, bg_line_id, segment),
+    by = c("row_id", "bg_line_id", "segment")
+  )
+
+# -----------------------------
+# Convert segments → points
+# -----------------------------
+sig_points <- sig_segments %>%
+  select(row_id, panel_id, bg_line_id, segment, x, y, xend, yend) %>%
+  pivot_longer(
+    cols = c(x, xend, y, yend),
+    names_to = "var",
+    values_to = "val"
+  ) %>%
+  mutate(
+    point = if_else(var %in% c("x", "y"), "start", "end"),
+    axis = if_else(var %in% c("x", "xend"), "day_num", "value")
+  ) %>%
+  select(-var) %>%
+  pivot_wider(names_from = axis, values_from = val) %>%
+  distinct()
+
+# -----------------------------
+# Summary using ONLY significant data
+# -----------------------------
+sig_ci <- sig_points %>%
+  group_by(row_id, panel_id, day_num) %>%
+  summarise(
+    sig_mean = mean(value, na.rm = TRUE),
+    sig_low = quantile(value, 0.025, na.rm = TRUE),
+    sig_high = quantile(value, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# -----------------------------
+# Plot: Significant-only mean + CI
+# -----------------------------
+p_sig_only <- ggplot() +
+  geom_ribbon(
+    data = sig_ci,
+    aes(x = day_num, ymin = sig_low, ymax = sig_high, group = row_id),
+    fill = "gray70",
+    alpha = 0.9
+  ) +
+  geom_line(
+    data = sig_ci,
+    aes(x = day_num, y = sig_mean, group = row_id),
+    color = "black",
+    alpha = 0.9,
+    linewidth = 1
+  ) +
+  geom_line(
+    data = long_df,
+    aes(x = day_num, y = value, group = row_id),
+    linewidth = 0.8
+  ) +
+  geom_point(
+    data = long_df,
+    aes(x = day_num, y = value),
+    size = 2
+  ) +
+  facet_wrap(
+    ~ panel_id,
+    ncol = 3,
+    labeller = labeller(panel_id = count_labels)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 7)) +
+  labs(
+    x = "Day",
+    y = "Value",
+    title = "Mean and 95% CI of Significant Background Portions Only"
+  ) +
+  theme_bw()
+
+print(p_sig_only)
+
+ggsave(
+  "paneled_plot_significant_only_mean_ci.png",
+  plot = p_sig_only,
+  width = 12,
+  height = 14,
+  dpi = 300
+)
+
