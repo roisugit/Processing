@@ -2,14 +2,14 @@
 library(tidyverse)
 
 # Read the TSV file
-# Replace with your actual file path
 df <- read_tsv("your_file.tsv")
 
-# Add row IDs and create panel labels including COUNT
+# Add unique panel ID, but display only COUNT
 df <- df %>%
   mutate(
     row_id = row_number(),
-    panel_label = paste0("Row ", row_id, "\nCount: ", COUNT)
+    panel_label = paste0("Count: ", COUNT),
+    panel_id = factor(row_id, levels = row_id)
   )
 
 # Reshape from wide to long format
@@ -23,21 +23,26 @@ long_df <- df %>%
     day_num = as.numeric(str_remove(day, "D"))
   )
 
+# Custom facet labels: unique panels, count-only labels
+count_labels <- setNames(df$panel_label, df$panel_id)
+
 # Create the paneled dot + line plot
 p <- ggplot(long_df, aes(x = day_num, y = value, group = row_id)) +
   geom_line() +
   geom_point(size = 2) +
-  facet_wrap(~ panel_label, ncol = 6) +
+  facet_wrap(
+    ~ panel_id,
+    ncol = 6,
+    labeller = labeller(panel_id = count_labels)
+  ) +
   scale_x_continuous(breaks = c(0, 2, 7)) +
   labs(
     x = "Day",
     y = "Value",
-    title = "Day 0, 2, and 7 Values by Row"
+    title = "Day 0, 2, and 7 Values"
   ) +
   theme_bw()
 
-# Print plot
 print(p)
 
-# Optional: save to file
 ggsave("paneled_plot.png", plot = p, width = 12, height = 10, dpi = 300)
