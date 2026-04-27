@@ -1,0 +1,198 @@
+# Load required libraries
+library(tidyverse)
+
+# Read the TSV file
+df <- read_tsv("your_file.tsv")
+
+# Column references
+bg_col <- names(df)[5]   # background values (semicolon-delimited)
+sig_col <- names(df)[6]  # significance flags (semicolon-delimited)
+
+# Add unique panel ID
+df <- df %>%
+  mutate(
+    row_id = row_number(),
+    panel_label = paste0("Count: ", COUNT),
+    panel_id = factor(row_id, levels = row_id)
+  )
+
+# Main data (D0, D2, D7)
+long_df <- df %>%
+  pivot_longer(
+    cols = c(D0, D2, D7),
+    names_to = "day",
+    values_to = "value"
+  ) %>%
+  mutate(day_num = as.numeric(str_remove(day, "D")))
+
+# Facet labels
+count_labels <- setNames(df$panel_label, df$panel_id)
+
+# -----------------------------
+# Background data parsing
+# -----------------------------
+# Assumes: D0;D2;D7 repeating
+
+bg_long <- df %>%
+  select(row_id, panel_id, bg_raw = all_of(bg_col)) %>%
+  mutate(bg_values = str_split(bg_raw, ";")) %>%
+  unnest_longer(bg_values, indices_to = "idx") %>%
+  mutate(
+    bg_value = as.numeric(str_trim(bg_values)),
+    day_num = rep(c(0, 2, 7), length.out = n()),
+    bg_line_id = ceiling(idx / 3)
+  ) %>%
+  filter(!is.na(bg_value))
+
+# -----------------------------
+# Significance parsing
+# -----------------------------
+# Assumes: pairs per line
+# D0→D2 ; D2→D7 repeating
+
+sig_long <- df %>%
+  select(row_id, sig_raw = all_of(sig_col)) %>%
+  mutate(sig_values = str_split(sig_raw, ";")) %>%
+  unnest_longer(sig_values, indices_to = "sig_idx") %>%
+  mutate(
+    sig = as.numeric(str_trim(sig_values)),
+    bg_line_id = ceiling(sig_idx / 2),
+    segment = if_else(sig_idx %% 2 == 1, "D0_D2", "D2_D7")
+  ) %>%
+  filter(sig == 1)
+
+# -----------------------------
+# Build line segments
+# -----------------------------
+bg_segments <- bg_long %>%
+  arrange(row_id, bg_line_id, day_num) %>%
+  group_by(row_id, panel_id, bg_line_id) %>%
+  mutate(
+    x = day_num,
+    y = bg_value,
+    xend = lead(day_num),
+    yend = lead(bg_value),
+    segment = case_when(
+      day_num == 0 & xend == 2 ~ "D0_D2",
+      day_num == 2 & xend == 7 ~ "D2_D7",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(segment))
+
+# Keep only significant segments
+sig_segments <- bg_segments %>%
+  inner_join(
+    sig_long %>% select(row_id, bg_line_id, segment),
+    by = c("row_id", "bg_line_id", "segment")
+  )
+
+# -----------------------------
+# Plot 1: Background lines + significant segments
+# -----------------------------
+p_gray <- ggplot() +
+  geom_line(
+    data = bg_long,
+    aes(x = day_num, y = bg_value, group = interaction(row_id, bg_line_id)),
+    color = "gray70",
+    alpha = 0.9,
+    linewidth = 0.3
+  ) +
+  geom_segment(
+    data = sig_segments,
+    aes(x = x, y = y, xend = xend, yend = yend),
+    color = "black",
+    alpha = 0.9,
+    linewidth = 0.7
+  ) +
+  geom_line(
+    data = long_df,
+    aes(x = day_num, y = value, group = row_id),
+    linewidth = 0.8
+  ) +
+  geom_point(
+    data = long_df,
+    aes(x = day_num, y = value),
+    size = 2
+  ) +
+  facet_wrap(
+    ~ panel_id,
+    ncol = 3,
+    labeller = labeller(panel_id = count_labels)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 7)) +
+  labs(
+    x = "Day",
+    y = "Value",
+    title = "Values with Background Lines and Significant Segments"
+  ) +
+  theme_bw()
+
+print(p_gray)
+
+ggsave(
+  "paneled_plot_with_significant_background_lines.png",
+  plot = p_gray,
+  width = 12,
+  height = 14,
+  dpi = 300
+)
+
+# -----------------------------
+# Plot 2: Confidence region
+# -----------------------------
+bg_ci <- bg_long %>%
+  group_by(row_id, panel_id, day_num) %>%
+  summarise(
+    bg_median = median(bg_value, na.rm = TRUE),
+    bg_low = quantile(bg_value, 0.025, na.rm = TRUE),
+    bg_high = quantile(bg_value, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p_ci <- ggplot() +
+  geom_ribbon(
+    data = bg_ci,
+    aes(x = day_num, ymin = bg_low, ymax = bg_high, group = row_id),
+    fill = "gray70",
+    alpha = 0.9
+  ) +
+  geom_line(
+    data = bg_ci,
+    aes(x = day_num, y = bg_median, group = row_id),
+    color = "gray50",
+    linewidth = 0.5
+  ) +
+  geom_line(
+    data = long_df,
+    aes(x = day_num, y = value, group = row_id),
+    linewidth = 0.8
+  ) +
+  geom_point(
+    data = long_df,
+    aes(x = day_num, y = value),
+    size = 2
+  ) +
+  facet_wrap(
+    ~ panel_id,
+    ncol = 3,
+    labeller = labeller(panel_id = count_labels)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 7)) +
+  labs(
+    x = "Day",
+    y = "Value",
+    title = "Values with Background 95% Confidence Region"
+  ) +
+  theme_bw()
+
+print(p_ci)
+
+ggsave(
+  "paneled_plot_with_background_ci.png",
+  plot = p_ci,
+  width = 12,
+  height = 14,
+  dpi = 300
+)
