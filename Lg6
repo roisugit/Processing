@@ -144,4 +144,104 @@ sig_bars <- df_binned %>%
       as.character(row$comparison_bin),
 
       "D2-D0" = tibble(x = 1, xend = 2, level = 0),
-      "D7-D2" = tibble(x = 2
+      "D7-D2" = tibble(x = 2, xend = 3, level = 0),
+      "D7-D0" = tibble(x = 1, xend = 3, level = 0),
+
+      "D7-D2 + D7-D0" = tibble(
+        x = c(2, 1),
+        xend = c(3, 3),
+        level = c(0, 1)
+      ),
+
+      "D2-D0 + D7-D0" = tibble(
+        x = c(1, 1),
+        xend = c(2, 3),
+        level = c(0, 1)
+      )
+    )
+
+    bars %>%
+      mutate(
+        trend_bin = row$trend_bin,
+        comparison_bin = row$comparison_bin,
+        y = row$bar_base + level * row$bar_step,
+        tick = 0.025 * row$yrange
+      )
+  }) %>%
+  ungroup()
+
+p <- ggplot() +
+  geom_segment(
+    data = segments_df,
+    aes(
+      x = x, xend = xend,
+      y = y, yend = yend,
+      group = profile_id
+    ),
+    color = "grey25",
+    linewidth = 0.8,
+    alpha = 0.85
+  ) +
+  geom_point(
+    data = long_df,
+    aes(
+      x = x,
+      y = value,
+      group = profile_id
+    ),
+    color = "grey25",
+    size = 0.8,
+    alpha = 0.85
+  ) +
+  geom_segment(
+    data = sig_bars,
+    aes(x = x, xend = xend, y = y, yend = y),
+    color = "black",
+    linewidth = 0.45
+  ) +
+  geom_segment(
+    data = sig_bars,
+    aes(x = x, xend = x, y = y, yend = y - tick),
+    color = "black",
+    linewidth = 0.45
+  ) +
+  geom_segment(
+    data = sig_bars,
+    aes(x = xend, xend = xend, y = y, yend = y - tick),
+    color = "black",
+    linewidth = 0.45
+  ) +
+  geom_text(
+    data = sig_bars,
+    aes(x = (x + xend) / 2, y = y, label = "*"),
+    vjust = -0.2,
+    size = 3
+  ) +
+  facet_grid(
+    rows = vars(trend_bin),
+    cols = vars(comparison_bin),
+    drop = FALSE
+  ) +
+  scale_x_continuous(
+    breaks = 1:3,
+    labels = c("D0", "D2", "D7")
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.18))) +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(size = 8),
+    legend.position = "none",
+    plot.title = element_blank()
+  ) +
+  labs(
+    x = NULL,
+    y = "Log2-CPM"
+  )
+
+ggsave("paneled_trend_plot.pdf", p, width = 18, height = 12)
+ggsave("paneled_trend_plot.png", p, width = 18, height = 12, dpi = 300)
+
+write_tsv(df_binned, "binned_profiles.tsv")
+write_tsv(segments_df, "binned_segments.tsv")
+write_tsv(df_unplotted, "unplotted_profiles.tsv")
