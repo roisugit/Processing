@@ -84,12 +84,16 @@ df <- df %>%
         "D2 negative; D7 recovers to non-negative",
 
       TRUE ~ "Other"
-    )
+    ),
+
+    # Panels are still separated by comparison,
+    # but panel titles only show the trend.
+    plot_bin = paste(trend_bin, comparison, sep = " __ ")
   )
 
 # ---------- LONG FORMAT ----------
 long_df <- df %>%
-  select(profile_id, trend_bin, comparison, D0, D2, D7) %>%
+  select(profile_id, trend_bin, plot_bin, comparison, D0, D2, D7) %>%
   pivot_longer(
     cols = c(D0, D2, D7),
     names_to = "day",
@@ -106,7 +110,9 @@ segments_df <- bind_rows(
     transmute(
       profile_id,
       trend_bin,
+      plot_bin,
       comparison,
+      segment = "D0-D2",
       x = 1,
       xend = 2,
       y = D0,
@@ -116,7 +122,9 @@ segments_df <- bind_rows(
     transmute(
       profile_id,
       trend_bin,
+      plot_bin,
       comparison,
+      segment = "D2-D7",
       x = 2,
       xend = 3,
       y = D2,
@@ -124,35 +132,63 @@ segments_df <- bind_rows(
     )
 )
 
+# ---------- GRAY BACKGROUND FOR NON-SIGNIFICANT REGIONS ----------
+# x positions:
+# D0 = 1, D2 = 2, D7 = 3
+#
+# If D2-D0 is sig, then D2-D7 region is gray.
+# If D7-D2 is sig, then D0-D2 region is gray.
+# If D7-D0 is sig, no region is gray because the full trajectory is significant.
+# If not significant, full plotting area is gray.
+
+shade_df <- df %>%
+  distinct(plot_bin, comparison) %>%
+  mutate(
+    xmin = case_when(
+      comparison == "D2-D0" ~ 2,
+      comparison == "D7-D2" ~ 1,
+      comparison == "D7-D0" ~ NA_real_,
+      comparison == "multiple" ~ NA_real_,
+      comparison == "not significant" ~ 1,
+      TRUE ~ NA_real_
+    ),
+    xmax = case_when(
+      comparison == "D2-D0" ~ 3,
+      comparison == "D7-D2" ~ 2,
+      comparison == "D7-D0" ~ NA_real_,
+      comparison == "multiple" ~ NA_real_,
+      comparison == "not significant" ~ 3,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  filter(!is.na(xmin), !is.na(xmax))
+
+# ---------- FACET LABELS ----------
+# Keeps panels separated internally by comparison,
+# but displays only trend_bin in the strip label.
+
+facet_labels <- df %>%
+  distinct(plot_bin, trend_bin) %>%
+  deframe()
+
 # ---------- PLOT ----------
 p <- ggplot() +
 
-  # Non-significant lines first, in light gray
-  geom_segment(
-    data = segments_df %>% filter(comparison == "not significant"),
+  geom_rect(
+    data = shade_df,
     aes(
-      x = x,
-      xend = xend,
-      y = y,
-      yend = yend,
-      group = profile_id
+      xmin = xmin,
+      xmax = xmax,
+      ymin = -Inf,
+      ymax = Inf
     ),
-    color = "grey85",
-    linewidth = 0.7,
-    alpha = 0.8
+    inherit.aes = FALSE,
+    fill = "grey90",
+    alpha = 0.75
   ) +
 
-  geom_point(
-    data = long_df %>% filter(comparison == "not significant"),
-    aes(x = x, y = value, group = profile_id),
-    color = "grey85",
-    size = 0.7,
-    alpha = 0.8
-  ) +
-
-  # Significant lines on top, colored by comparison
   geom_segment(
-    data = segments_df %>% filter(comparison != "not significant"),
+    data = segments_df,
     aes(
       x = x,
       xend = xend,
@@ -166,7 +202,7 @@ p <- ggplot() +
   ) +
 
   geom_point(
-    data = long_df %>% filter(comparison != "not significant"),
+    data = long_df,
     aes(
       x = x,
       y = value,
@@ -177,20 +213,26 @@ p <- ggplot() +
     alpha = 0.85
   ) +
 
-  facet_wrap(~ trend_bin) +
+  facet_wrap(
+    ~ plot_bin,
+    labeller = labeller(plot_bin = facet_labels)
+  ) +
 
   scale_x_continuous(
     breaks = 1:3,
-    labels = c("D0", "D2", "D7")
+    labels = c("D0", "D2", "D7"),
+    limits = c(1, 3),
+    expand = expansion(mult = c(0.04, 0.04))
   ) +
 
   scale_color_manual(
     name = "Comparisons",
     values = c(
-      "D2-D0" = "#8dd3c7",
-      "D7-D2" = "#fdb462",
-      "D7-D0" = "#bebada",
-      "multiple" = "#fb8072"
+      "D2-D0" = "#9adbcf",
+      "D7-D2" = "#a7c7e7",
+      "D7-D0" = "#c3b1e1",
+      "multiple" = "#b8e0d2",
+      "not significant" = "grey65"
     )
   ) +
 
@@ -212,3 +254,5 @@ ggsave("paneled_trend_plot.png", p, width = 16, height = 11, dpi = 300)
 
 write_tsv(df, "binned_profiles.tsv")
 write_tsv(segments_df, "binned_segments.tsv")
+
+
