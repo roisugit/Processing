@@ -1,3 +1,43 @@
+# ---------- PARSE SIGNIFICANCE ----------
+# New Sig mapping:
+# 1;0;0 = D2-D0
+# 0;1;0 = D7-D2
+# 0;0;1 = D7-D0
+# Multiple 1s = multiple groups
+
+parse_sig <- function(x) {
+  vals <- as.integer(str_split(as.character(x), ";", simplify = FALSE)[[1]])
+  vals <- vals[!is.na(vals)]
+
+  if (length(vals) < 3) vals <- c(vals, rep(0, 3 - length(vals)))
+
+  usable <- floor(length(vals) / 3) * 3
+  vals <- vals[seq_len(usable)]
+
+  mat <- matrix(vals, ncol = 3, byrow = TRUE)
+
+  sig_D2_D0 <- any(mat[, 1] == 1)
+  sig_D7_D2 <- any(mat[, 2] == 1)
+  sig_D7_D0 <- any(mat[, 3] == 1)
+
+  n_sig <- sig_D2_D0 + sig_D7_D2 + sig_D7_D0
+
+  tibble(
+    sig_D2_D0 = sig_D2_D0,
+    sig_D7_D2 = sig_D7_D2,
+    sig_D7_D0 = sig_D7_D0,
+    comparison = case_when(
+      n_sig == 0 ~ "not significant",
+      n_sig > 1 ~ "multiple",
+      sig_D2_D0 ~ "D2-D0",
+      sig_D7_D2 ~ "D7-D2",
+      sig_D7_D0 ~ "D7-D0"
+    )
+  )
+}
+
+
+
 #!/usr/bin/env Rscript
 
 library(tidyverse)
