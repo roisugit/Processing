@@ -1,43 +1,3 @@
-# ---------- PARSE SIGNIFICANCE ----------
-# New Sig mapping:
-# 1;0;0 = D2-D0
-# 0;1;0 = D7-D2
-# 0;0;1 = D7-D0
-# Multiple 1s = multiple groups
-
-parse_sig <- function(x) {
-  vals <- as.integer(str_split(as.character(x), ";", simplify = FALSE)[[1]])
-  vals <- vals[!is.na(vals)]
-
-  if (length(vals) < 3) vals <- c(vals, rep(0, 3 - length(vals)))
-
-  usable <- floor(length(vals) / 3) * 3
-  vals <- vals[seq_len(usable)]
-
-  mat <- matrix(vals, ncol = 3, byrow = TRUE)
-
-  sig_D2_D0 <- any(mat[, 1] == 1)
-  sig_D7_D2 <- any(mat[, 2] == 1)
-  sig_D7_D0 <- any(mat[, 3] == 1)
-
-  n_sig <- sig_D2_D0 + sig_D7_D2 + sig_D7_D0
-
-  tibble(
-    sig_D2_D0 = sig_D2_D0,
-    sig_D7_D2 = sig_D7_D2,
-    sig_D7_D0 = sig_D7_D0,
-    comparison = case_when(
-      n_sig == 0 ~ "not significant",
-      n_sig > 1 ~ "multiple",
-      sig_D2_D0 ~ "D2-D0",
-      sig_D7_D2 ~ "D7-D2",
-      sig_D7_D0 ~ "D7-D0"
-    )
-  )
-}
-
-
-
 #!/usr/bin/env Rscript
 
 library(tidyverse)
@@ -48,10 +8,10 @@ if (is.na(infile)) infile <- "input.tsv"
 eps <- 1e-9
 
 # ---------- PARSE SIGNIFICANCE ----------
-# Sig mapping:
-# 1;1;0 = D2-D0
-# 0;1;1 = D7-D2
-# 1;0;1 = D7-D0
+# New mapping:
+# 1;0;0 = D2-D0
+# 0;1;0 = D7-D2
+# 0;0;1 = D7-D0
 
 parse_sig <- function(x) {
   vals <- as.integer(str_split(as.character(x), ";", simplify = FALSE)[[1]])
@@ -64,25 +24,14 @@ parse_sig <- function(x) {
 
   mat <- matrix(vals, ncol = 3, byrow = TRUE)
 
-  sig_D2_D0 <- any(mat[, 1] == 1 & mat[, 2] == 1 & mat[, 3] == 0)
-  sig_D7_D2 <- any(mat[, 1] == 0 & mat[, 2] == 1 & mat[, 3] == 1)
-  sig_D7_D0 <- any(mat[, 1] == 1 & mat[, 2] == 0 & mat[, 3] == 1)
-
   tibble(
-    sig_D2_D0 = sig_D2_D0,
-    sig_D7_D2 = sig_D7_D2,
-    sig_D7_D0 = sig_D7_D0,
-    comparison = case_when(
-      sig_D2_D0 & !sig_D7_D2 & !sig_D7_D0 ~ "D2-D0",
-      sig_D7_D2 & !sig_D2_D0 & !sig_D7_D0 ~ "D7-D2",
-      sig_D7_D0 & !sig_D2_D0 & !sig_D7_D2 ~ "D7-D0",
-      sig_D2_D0 | sig_D7_D2 | sig_D7_D0 ~ "multiple",
-      TRUE ~ "not significant"
-    )
+    sig_D2_D0 = any(mat[, 1] == 1),
+    sig_D7_D2 = any(mat[, 2] == 1),
+    sig_D7_D0 = any(mat[, 3] == 1)
   )
 }
 
-# ---------- LOAD DATA ----------
+# ---------- LOAD ----------
 df <- read_tsv(infile, show_col_types = FALSE) %>%
   mutate(
     profile_id = row_number(),
@@ -92,8 +41,32 @@ df <- read_tsv(infile, show_col_types = FALSE) %>%
   ) %>%
   bind_cols(map_dfr(.$Sig, parse_sig))
 
+# ---------- EXPAND MULTIPLE MEMBERSHIP ----------
+df_long_sig <- df %>%
+  pivot_longer(
+    cols = starts_with("sig_"),
+    names_to = "comparison",
+    values_to = "is_sig"
+  ) %>%
+  filter(is_sig) %>%
+  mutate(
+    comparison = recode(
+      comparison,
+      sig_D2_D0 = "D2-D0",
+      sig_D7_D2 = "D7-D2",
+      sig_D7_D0 = "D7-D0"
+    )
+  )
+
+# Add back non-significant rows (optional: keep them)
+df_nonsig <- df %>%
+  filter(!(sig_D2_D0 | sig_D7_D2 | sig_D7_D0)) %>%
+  mutate(comparison = "not significant")
+
+df_expanded <- bind_rows(df_long_sig, df_nonsig)
+
 # ---------- TREND BINS ----------
-df <- df %>%
+df_expanded <- df_expanded %>%
   mutate(
     trend_bin = case_when(
       D2 > eps & D7 > D2 + eps ~
@@ -126,13 +99,11 @@ df <- df %>%
       TRUE ~ "Other"
     ),
 
-    # Panels are still separated by comparison,
-    # but panel titles only show the trend.
     plot_bin = paste(trend_bin, comparison, sep = " __ ")
   )
 
 # ---------- LONG FORMAT ----------
-long_df <- df %>%
+long_df <- df_expanded %>%
   select(profile_id, trend_bin, plot_bin, comparison, D0, D2, D7) %>%
   pivot_longer(
     cols = c(D0, D2, D7),
@@ -144,70 +115,47 @@ long_df <- df %>%
     x = as.numeric(day)
   )
 
-# ---------- LINE SEGMENTS ----------
+# ---------- SEGMENTS ----------
 segments_df <- bind_rows(
-  df %>%
+  df_expanded %>%
     transmute(
       profile_id,
-      trend_bin,
       plot_bin,
       comparison,
-      segment = "D0-D2",
-      x = 1,
-      xend = 2,
-      y = D0,
-      yend = D2
+      x = 1, xend = 2,
+      y = D0, yend = D2
     ),
-  df %>%
+  df_expanded %>%
     transmute(
       profile_id,
-      trend_bin,
       plot_bin,
       comparison,
-      segment = "D2-D7",
-      x = 2,
-      xend = 3,
-      y = D2,
-      yend = D7
+      x = 2, xend = 3,
+      y = D2, yend = D7
     )
 )
 
-# ---------- GRAY BACKGROUND FOR NON-SIGNIFICANT REGIONS ----------
-# x positions:
-# D0 = 1, D2 = 2, D7 = 3
-#
-# If D2-D0 is sig, then D2-D7 region is gray.
-# If D7-D2 is sig, then D0-D2 region is gray.
-# If D7-D0 is sig, no region is gray because the full trajectory is significant.
-# If not significant, full plotting area is gray.
-
-shade_df <- df %>%
+# ---------- GRAY BACKGROUND ----------
+shade_df <- df_expanded %>%
   distinct(plot_bin, comparison) %>%
   mutate(
     xmin = case_when(
       comparison == "D2-D0" ~ 2,
       comparison == "D7-D2" ~ 1,
       comparison == "D7-D0" ~ NA_real_,
-      comparison == "multiple" ~ NA_real_,
-      comparison == "not significant" ~ 1,
-      TRUE ~ NA_real_
+      comparison == "not significant" ~ 1
     ),
     xmax = case_when(
       comparison == "D2-D0" ~ 3,
       comparison == "D7-D2" ~ 2,
       comparison == "D7-D0" ~ NA_real_,
-      comparison == "multiple" ~ NA_real_,
-      comparison == "not significant" ~ 3,
-      TRUE ~ NA_real_
+      comparison == "not significant" ~ 3
     )
   ) %>%
-  filter(!is.na(xmin), !is.na(xmax))
+  filter(!is.na(xmin))
 
-# ---------- FACET LABELS ----------
-# Keeps panels separated internally by comparison,
-# but displays only trend_bin in the strip label.
-
-facet_labels <- df %>%
+# ---------- LABEL CLEANUP ----------
+facet_labels <- df_expanded %>%
   distinct(plot_bin, trend_bin) %>%
   deframe()
 
@@ -216,25 +164,17 @@ p <- ggplot() +
 
   geom_rect(
     data = shade_df,
-    aes(
-      xmin = xmin,
-      xmax = xmax,
-      ymin = -Inf,
-      ymax = Inf
-    ),
-    inherit.aes = FALSE,
+    aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
     fill = "grey90",
-    alpha = 0.75
+    alpha = 0.7
   ) +
 
   geom_segment(
     data = segments_df,
     aes(
-      x = x,
-      xend = xend,
-      y = y,
-      yend = yend,
-      group = profile_id,
+      x = x, xend = xend,
+      y = y, yend = yend,
+      group = interaction(profile_id, comparison),
       color = comparison
     ),
     linewidth = 0.8,
@@ -246,7 +186,7 @@ p <- ggplot() +
     aes(
       x = x,
       y = value,
-      group = profile_id,
+      group = interaction(profile_id, comparison),
       color = comparison
     ),
     size = 0.8,
@@ -260,9 +200,7 @@ p <- ggplot() +
 
   scale_x_continuous(
     breaks = 1:3,
-    labels = c("D0", "D2", "D7"),
-    limits = c(1, 3),
-    expand = expansion(mult = c(0.04, 0.04))
+    labels = c("D0", "D2", "D7")
   ) +
 
   scale_color_manual(
@@ -271,7 +209,6 @@ p <- ggplot() +
       "D2-D0" = "#9adbcf",
       "D7-D2" = "#a7c7e7",
       "D7-D0" = "#c3b1e1",
-      "multiple" = "#b8e0d2",
       "not significant" = "grey65"
     )
   ) +
@@ -292,7 +229,7 @@ p <- ggplot() +
 ggsave("paneled_trend_plot.pdf", p, width = 16, height = 11)
 ggsave("paneled_trend_plot.png", p, width = 16, height = 11, dpi = 300)
 
-write_tsv(df, "binned_profiles.tsv")
+write_tsv(df_expanded, "binned_profiles.tsv")
 write_tsv(segments_df, "binned_segments.tsv")
 
 
