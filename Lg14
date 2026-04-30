@@ -1,0 +1,38 @@
+trend_bin = case_when(
+  comparison_bin == "D7-D2 + D7-D0" & d_D7_D2 > eps  ~ "D7 increases from D2",
+  comparison_bin == "D7-D2 + D7-D0" & d_D7_D2 < -eps ~ "D7 decreases from D2",
+
+  comparison_bin != "D7-D2 + D7-D0" & d_D2_D0 > eps  ~ "D2 increases from D0",
+  comparison_bin != "D7-D2 + D7-D0" & d_D2_D0 < -eps ~ "D2 decreases from D0",
+
+  TRUE ~ NA_character_
+)
+
+
+
+trend_levels <- c(
+  "D2 increases from D0",
+  "D2 decreases from D0",
+  "D7 increases from D2",
+  "D7 decreases from D2"
+)
+
+
+
+"D2 increases from D0 | D2-D0" = "#1B9E77",
+"D2 decreases from D0 | D2-D0" = "#66C2A5",
+...
+"D7 increases from D2 | D7-D2 + D7-D0" = "#A65628",
+"D7 decreases from D2 | D7-D2 + D7-D0" = "#D95F02",
+
+
+
+
+plot_trend_bin = if_else(
+  comparison_bin == merged_comparison,
+  "D2 decreases from D0",   # <- update this too
+  trend_bin
+)
+
+
+
