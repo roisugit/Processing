@@ -1,7 +1,6 @@
 #!/usr/bin/env Rscript
 
 library(tidyverse)
-library(patchwork)
 
 infile <- commandArgs(trailingOnly = TRUE)[1]
 if (is.na(infile)) infile <- "input.tsv"
@@ -18,37 +17,23 @@ comparison_levels <- c(
   "D7-D2",
   "D7-D0",
   "D2-D0 + D7-D2",
-  "D2-D0 + D7-D0",
-  "D7-D2 + D7-D0"
-)
-
-main_comparisons <- c(
-  "D2-D0",
-  "D7-D2",
-  "D7-D0",
-  "D2-D0 + D7-D2",
-  "D7-D2 + D7-D0"
+  "D7-D2 + D7-D0",
+  "D2-D0 + D7-D0"
 )
 
 merged_comparison <- "D2-D0 + D7-D0"
 
-# ---------- COLORS ----------
 panel_colors <- c(
   "D7 increases from D2 | D2-D0" = "#1B9E77",
   "D7 decreases from D2 | D2-D0" = "#66C2A5",
-
   "D7 increases from D2 | D7-D2" = "#377EB8",
   "D7 decreases from D2 | D7-D2" = "#8DA0CB",
-
   "D7 increases from D2 | D7-D0" = "#984EA3",
   "D7 decreases from D2 | D7-D0" = "#B39DDB",
-
   "D7 increases from D2 | D2-D0 + D7-D2" = "#E41A1C",
   "D7 decreases from D2 | D2-D0 + D7-D2" = "#FB8072",
-
   "D7 increases from D2 | D7-D2 + D7-D0" = "#A65628",
   "D7 decreases from D2 | D7-D2 + D7-D0" = "#D95F02",
-
   "D2-D0 + D7-D0" = "#FC8D62"
 )
 
@@ -97,11 +82,23 @@ df_gene <- df %>%
   )
 
 # ---------- FILTER ----------
+df_unplotted <- df_gene %>%
+  filter(is.na(trend_bin) | is.na(comparison_bin))
+
 df_binned <- df_gene %>%
   filter(!is.na(trend_bin), !is.na(comparison_bin)) %>%
   mutate(
-    trend_bin = factor(trend_bin, levels = trend_levels),
     comparison_bin = factor(comparison_bin, levels = comparison_levels),
+
+    # merged panel appears once only, in the final row/column position
+    plot_trend_bin = if_else(
+      comparison_bin == merged_comparison,
+      "D7 decreases from D2",
+      trend_bin
+    ),
+
+    trend_bin = factor(trend_bin, levels = trend_levels),
+    plot_trend_bin = factor(plot_trend_bin, levels = trend_levels),
 
     panel_color_bin = if_else(
       comparison_bin == merged_comparison,
@@ -114,110 +111,128 @@ df_binned <- df_gene %>%
 long_df <- df_binned %>%
   pivot_longer(c(D0, D2, D7), names_to = "day", values_to = "value") %>%
   mutate(
-    day = factor(day, levels = c("D0","D2","D7")),
+    day = factor(day, levels = c("D0", "D2", "D7")),
     x = as.numeric(day)
   )
 
 # ---------- SEGMENTS ----------
 segments_df <- bind_rows(
-  df_binned %>% transmute(profile_id, trend_bin, comparison_bin, panel_color_bin, x=1,xend=2,y=D0,yend=D2),
-  df_binned %>% transmute(profile_id, trend_bin, comparison_bin, panel_color_bin, x=2,xend=3,y=D2,yend=D7)
+  df_binned %>% transmute(profile_id, plot_trend_bin, comparison_bin, panel_color_bin, x = 1, xend = 2, y = D0, yend = D2),
+  df_binned %>% transmute(profile_id, plot_trend_bin, comparison_bin, panel_color_bin, x = 2, xend = 3, y = D2, yend = D7)
 )
 
 # ---------- SIGNIFICANCE ----------
-make_sig <- function(dat){
+make_sig <- function(dat) {
   dat %>%
-    group_by(trend_bin, comparison_bin) %>%
+    group_by(plot_trend_bin, comparison_bin) %>%
     summarise(
-      ymax=max(c(D0,D2,D7)), ymin=min(c(D0,D2,D7)),
-      panel_color_bin=first(panel_color_bin),
-      .groups="drop"
+      ymax = max(c(D0, D2, D7), na.rm = TRUE),
+      ymin = min(c(D0, D2, D7), na.rm = TRUE),
+      panel_color_bin = first(panel_color_bin),
+      .groups = "drop"
     ) %>%
     rowwise() %>%
     do({
       row <- .
-      bars <- switch(as.character(row$comparison_bin),
-        "D2-D0" = tibble(x=1,xend=2,level=0),
-        "D7-D2" = tibble(x=2,xend=3,level=0),
-        "D7-D0" = tibble(x=1,xend=3,level=0),
-        "D2-D0 + D7-D2" = tibble(x=c(1,2),xend=c(2,3),level=c(0,1)),
-        "D2-D0 + D7-D0" = tibble(x=c(1,1),xend=c(2,3),level=c(0,1)),
-        "D7-D2 + D7-D0" = tibble(x=c(2,1),xend=c(3,3),level=c(0,1))
+
+      bars <- switch(
+        as.character(row$comparison_bin),
+        "D2-D0" = tibble(x = 1, xend = 2, level = 0),
+        "D7-D2" = tibble(x = 2, xend = 3, level = 0),
+        "D7-D0" = tibble(x = 1, xend = 3, level = 0),
+        "D2-D0 + D7-D2" = tibble(x = c(1, 2), xend = c(2, 3), level = c(0, 1)),
+        "D2-D0 + D7-D0" = tibble(x = c(1, 1), xend = c(2, 3), level = c(0, 1)),
+        "D7-D2 + D7-D0" = tibble(x = c(2, 1), xend = c(3, 3), level = c(0, 1))
       )
-      yr <- max(row$ymax-row$ymin,0.5)
+
+      yr <- max(row$ymax - row$ymin, 0.5)
+
       bars %>%
         mutate(
-          trend_bin=row$trend_bin,
-          comparison_bin=row$comparison_bin,
-          panel_color_bin=row$panel_color_bin,
-          y=row$ymax + yr*(0.08+0.09*level),
-          tick=yr*0.04
+          plot_trend_bin = row$plot_trend_bin,
+          comparison_bin = row$comparison_bin,
+          panel_color_bin = row$panel_color_bin,
+          y = row$ymax + yr * (0.08 + 0.09 * level),
+          tick = yr * 0.04
         )
-    }) %>% ungroup()
+    }) %>%
+    ungroup()
 }
 
 sig_bars <- make_sig(df_binned)
 
-# ---------- SPLIT ----------
-main_long <- long_df %>% filter(comparison_bin %in% main_comparisons)
-main_seg  <- segments_df %>% filter(comparison_bin %in% main_comparisons)
-main_sig  <- sig_bars %>% filter(comparison_bin %in% main_comparisons)
-
-merged_long <- long_df %>% filter(comparison_bin == merged_comparison)
-merged_seg  <- segments_df %>% filter(comparison_bin == merged_comparison)
-merged_sig  <- sig_bars %>% filter(comparison_bin == merged_comparison)
-
 # ---------- BASE PLOT ----------
-base_plot <- function(seg, long, sig){
+base_plot <- function() {
   ggplot() +
-    geom_segment(data=seg,
-      aes(x=x,xend=xend,y=y,yend=yend,group=profile_id,color=panel_color_bin),
-      linewidth=0.8, alpha=0.85) +
-    geom_point(data=long,
-      aes(x=x,y=value,group=profile_id,color=panel_color_bin),
-      size=0.8, alpha=0.85) +
-    geom_segment(data=sig,aes(x,xend=xend,y,yend=y),color="black",linewidth=0.6) +
-    geom_segment(data=sig,aes(x,xend=x,y,yend=y-tick),color="black",linewidth=0.6) +
-    geom_segment(data=sig,aes(xend,xend=xend,y,yend=y-tick),color="black",linewidth=0.6) +
-    geom_text(data=sig,aes((x+xend)/2,y+0.5*tick),label="*",size=4) +
-    scale_x_continuous(breaks=1:3,labels=c("D0","D2","D7")) +
-    scale_y_continuous(breaks=c(-2.5,0,2.5,5)) +
-    scale_color_manual(values=panel_colors) +
-    coord_cartesian(clip="off") +
-    theme_bw(base_size=12) +
-    theme(
-      panel.grid.minor=element_blank(),
-      legend.position="none",
-      strip.text.y=element_blank()
+    geom_segment(
+      data = segments_df,
+      aes(x = x, xend = xend, y = y, yend = yend, group = profile_id, color = panel_color_bin),
+      linewidth = 0.8,
+      alpha = 0.85
     ) +
-    labs(x=NULL,y="Log2-CPM")
+    geom_point(
+      data = long_df,
+      aes(x = x, y = value, group = profile_id, color = panel_color_bin),
+      size = 0.8,
+      alpha = 0.85
+    ) +
+    geom_segment(data = sig_bars, aes(x = x, xend = xend, y = y, yend = y), color = "black", linewidth = 0.6) +
+    geom_segment(data = sig_bars, aes(x = x, xend = x, y = y, yend = y - tick), color = "black", linewidth = 0.6) +
+    geom_segment(data = sig_bars, aes(x = xend, xend = xend, y = y, yend = y - tick), color = "black", linewidth = 0.6) +
+    geom_text(
+      data = sig_bars,
+      aes(x = (x + xend) / 2, y = y + 0.5 * tick),
+      label = "*",
+      size = 4
+    ) +
+    scale_x_continuous(breaks = 1:3, labels = c("D0", "D2", "D7")) +
+    scale_y_continuous(breaks = c(-2.5, 0, 2.5, 5)) +
+    scale_color_manual(values = panel_colors) +
+    coord_cartesian(clip = "off") +
+    theme_bw(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "none",
+      plot.margin = margin(t = 20, r = 5, b = 5, l = 5)
+    ) +
+    labs(x = NULL, y = "Log2-CPM")
 }
 
 # ---------- HORIZONTAL ----------
-p_main_h <- base_plot(main_seg,main_long,main_sig) +
-  facet_grid(rows=vars(trend_bin), cols=vars(comparison_bin))
+p_horizontal <- base_plot() +
+  facet_grid(
+    rows = vars(plot_trend_bin),
+    cols = vars(comparison_bin),
+    drop = FALSE
+  ) +
+  theme(
+    strip.text.y = element_blank(),
+    strip.background.y = element_blank()
+  )
 
-p_merge_h <- base_plot(merged_seg,merged_long,merged_sig) +
-  facet_wrap(~comparison_bin)
-
-p_horizontal <- patchwork::wrap_plots(
-  p_main_h, p_merge_h,
-  ncol=2, widths=c(5,1)
-)
-
-# ---------- VERTICAL ----------
-p_main_v <- base_plot(main_seg,main_long,main_sig) +
-  facet_grid(rows=vars(comparison_bin), cols=vars(trend_bin)) +
-  theme(strip.text.x=element_blank(), strip.text.y=element_text())
-
-p_merge_v <- base_plot(merged_seg,merged_long,merged_sig) +
-  facet_wrap(~comparison_bin)
-
-p_vertical <- patchwork::wrap_plots(
-  p_main_v, p_merge_v,
-  ncol=1, heights=c(5,1)
-)
+# ---------- VERTICAL / TRANSPOSED ----------
+p_vertical <- base_plot() +
+  facet_grid(
+    rows = vars(comparison_bin),
+    cols = vars(plot_trend_bin),
+    drop = FALSE,
+    switch = "y"
+  ) +
+  theme(
+    strip.text.x = element_blank(),
+    strip.background.x = element_blank(),
+    strip.text.y.left = element_text(angle = 0),
+    strip.placement = "outside"
+  )
 
 # ---------- SAVE ----------
-ggsave("paneled_trend_plot_horizontal.png", p_horizontal, width=24, height=8, dpi=300)
-ggsave("paneled_trend_plot_vertical.png", p_vertical, width=10, height=24, dpi=300)
+ggsave("paneled_trend_plot_horizontal.png", p_horizontal, width = 22, height = 8, dpi = 300)
+ggsave("paneled_trend_plot_horizontal.pdf", p_horizontal, width = 22, height = 8)
+
+ggsave("paneled_trend_plot_vertical.png", p_vertical, width = 10, height = 24, dpi = 300)
+ggsave("paneled_trend_plot_vertical.pdf", p_vertical, width = 10, height = 24)
+
+write_tsv(df_gene, "gene_combination_profiles.tsv")
+write_tsv(df_binned, "binned_profiles.tsv")
+write_tsv(segments_df, "binned_segments.tsv")
+write_tsv(df_unplotted, "unplotted_profiles.tsv")
