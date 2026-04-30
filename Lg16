@@ -1,0 +1,9 @@
+geom_rect(
+  data = df_binned %>%
+    distinct(plot_trend_bin, comparison_bin),
+  aes(xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf),
+  fill = NA,
+  color = "black",
+  linewidth = 0.6,
+  inherit.aes = FALSE
+)
