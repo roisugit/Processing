@@ -1,0 +1,39 @@
+panel_colors <- c(
+  "D7 increases from D2 | D2-D0" = "#006D3C",
+  "D7 decreases from D2 | D2-D0" = "#66C2A5",
+  "D7 increases from D2 | D7-D2" = "#084594",
+  "D7 decreases from D2 | D7-D2" = "#8DA0CB",
+  "D7 increases from D2 | D7-D0" = "#4A1486",
+  "D7 decreases from D2 | D7-D0" = "#B39DDB",
+  "D7 increases from D2 | D2-D0 + D7-D2" = "#99000D",
+  "D7 decreases from D2 | D2-D0 + D7-D2" = "#FB8072",
+  "D7 increases from D2 | D7-D2 + D7-D0" = "#5D2A0C",
+  "D7 decreases from D2 | D7-D2 + D7-D0" = "#D95F02",
+  "D2-D0 + D7-D0" = "#B34A00"
+)
+
+
+plot_trend_bin = case_when(
+  comparison_bin == merged_comparison ~ "D7 decreases from D2",
+
+  comparison_bin == "D7-D0" & trend_bin == "D7 increases from D2" ~ "D7 decreases from D2",
+  comparison_bin == "D7-D0" & trend_bin == "D7 decreases from D2" ~ "D7 increases from D2",
+
+  TRUE ~ trend_bin
+),
+
+
+empty_black_panel <- tibble(
+  plot_trend_bin = factor("D7 increases from D2", levels = trend_levels),
+  comparison_bin = factor(merged_comparison, levels = comparison_levels)
+)
+
+
+geom_rect(
+      data = empty_black_panel,
+      aes(xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf),
+      fill = "black",
+      inherit.aes = FALSE
+    ) +
+
+
