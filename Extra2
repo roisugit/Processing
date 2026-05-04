@@ -1,0 +1,30 @@
+# ---------- DEFINE COLOR GROUPS ----------
+group1_colors <- c("#1B9E77", "#377EB8", "#984EA3")  # example
+group2_colors <- c("#E41A1C", "#A65628", "#FC8D62")  # example
+
+plot_df <- plot_df %>%
+  mutate(
+    color_group = case_when(
+      color %in% group1_colors ~ "Group 1",
+      color %in% group2_colors ~ "Group 2",
+      TRUE ~ "Other"
+    )
+  )
+
+
+facet_grid(
+  rows = vars(color_group),
+  cols = vars(pathway_group),
+  scales = "free_x",
+  space = "free_x"
+)
+
+
+
+plot_df <- plot_df %>%
+  group_by(color_group) %>%
+  mutate(color = factor(color, levels = unique(color))) %>%
+  ungroup()
+
+
+
