@@ -1,0 +1,60 @@
+#!/usr/bin/env Rscript
+
+library(tidyverse)
+
+args <- commandArgs(trailingOnly = TRUE)
+
+gene_color_file <- args[1]
+d2_d0_file <- args[2]
+d7_d2_file <- args[3]
+d7_d0_file <- args[4]
+path_d2_d0_file <- args[5]
+path_d7_d2_file <- args[6]
+path_d7_d0_file <- args[7]
+
+if (length(args) < 7) {
+  stop("Usage: Rscript append_all.R gene_colors.tsv D2_D0.tsv D7_D2.tsv D7_D0.tsv path_D2_D0.tsv path_D7_D2.tsv path_D7_D0.tsv")
+}
+
+# ---------- HELPERS ----------
+read_log2fc <- function(file, new_colname) {
+  read_tsv(file, col_names = FALSE, show_col_types = FALSE) %>%
+    transmute(
+      Gene = as.character(X1),
+      !!new_colname := as.numeric(X2)
+    )
+}
+
+read_pathways <- function(file, new_colname) {
+  read_tsv(file, col_names = FALSE, show_col_types = FALSE) %>%
+    transmute(
+      Gene = as.character(X1),
+      !!new_colname := as.character(X2)
+    )
+}
+
+# ---------- LOAD BASE ----------
+gene_colors <- read_tsv(gene_color_file, show_col_types = FALSE) %>%
+  mutate(Gene = as.character(Gene))
+
+# ---------- LOAD LOG2FC ----------
+d2_d0 <- read_log2fc(d2_d0_file, "log2fc_D2_v_D0")
+d7_d2 <- read_log2fc(d7_d2_file, "log2fc_D7_v_D2")
+d7_d0 <- read_log2fc(d7_d0_file, "log2fc_D7_v_D0")
+
+# ---------- LOAD PATHWAYS ----------
+p_d2_d0 <- read_pathways(path_d2_d0_file, "pathways_D2_v_D0")
+p_d7_d2 <- read_pathways(path_d7_d2_file, "pathways_D7_v_D2")
+p_d7_d0 <- read_pathways(path_d7_d0_file, "pathways_D7_v_D0")
+
+# ---------- JOIN EVERYTHING ----------
+out <- gene_colors %>%
+  left_join(d2_d0, by = "Gene") %>%
+  left_join(d7_d2, by = "Gene") %>%
+  left_join(d7_d0, by = "Gene") %>%
+  left_join(p_d2_d0, by = "Gene") %>%
+  left_join(p_d7_d2, by = "Gene") %>%
+  left_join(p_d7_d0, by = "Gene")
+
+# ---------- SAVE ----------
+write_tsv(out, "gene_colors_with_log2fc_and_pathways.tsv")
