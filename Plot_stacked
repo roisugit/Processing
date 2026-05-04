@@ -1,122 +1,198 @@
 #!/usr/bin/env Rscript
 
 library(tidyverse)
+library(patchwork)
 
 # ---------- FILES ----------
 infile <- "gene_colors_with_log2fc_and_pathways.tsv"
 
-outfile_png <- "stacked_pathway_barplot.png"
-outfile_pdf <- "stacked_pathway_barplot.pdf"
+outfile_png <- "stacked_pathway_barplot_with_log2fc_boxplots.png"
+outfile_pdf <- "stacked_pathway_barplot_with_log2fc_boxplots.pdf"
 
-comparison_levels <- c("D2vD0","D7vD2","D7vD0")
+comparison_levels <- c("D2vD0", "D7vD2", "D7vD0")
 
 # ---------- LOAD ----------
 df <- read_tsv(infile, show_col_types = FALSE) %>%
-  rename(Gene = 1, color = 2)
-
-# ---------- LONG PATHWAY ----------
-plot_df <- df %>%
-  select(Gene, color,
-         pathways_D2_v_D0, pathways_D7_v_D2, pathways_D7_v_D0) %>%
-  pivot_longer(starts_with("pathways_"),
-               names_to = "comparison",
-               values_to = "pathway") %>%
+  rename(
+    Gene = 1,
+    color = 2
+  ) %>%
   mutate(
-    comparison = recode(comparison,
+    Gene = as.character(Gene),
+    color = as.character(color)
+  )
+
+# ---------- LONG PATHWAY TABLE ----------
+pathway_df <- df %>%
+  select(
+    Gene,
+    color,
+    pathways_D2_v_D0,
+    pathways_D7_v_D2,
+    pathways_D7_v_D0
+  ) %>%
+  pivot_longer(
+    cols = starts_with("pathways_"),
+    names_to = "comparison",
+    values_to = "pathway"
+  ) %>%
+  mutate(
+    comparison = recode(
+      comparison,
       pathways_D2_v_D0 = "D2vD0",
       pathways_D7_v_D2 = "D7vD2",
       pathways_D7_v_D0 = "D7vD0"
-    )
+    ),
+    comparison = factor(comparison, levels = comparison_levels)
   ) %>%
+  filter(!is.na(pathway), pathway != "") %>%
   separate_rows(pathway, sep = ",") %>%
   mutate(pathway = str_trim(pathway)) %>%
   filter(pathway != "") %>%
   distinct(pathway, comparison, color, Gene)
 
-# ---------- COUNTS ----------
-count_df <- plot_df %>%
-  count(pathway, comparison, color, name = "n_genes")
-
-# ---------- LONG LOG2FC ----------
-log_df <- df %>%
-  select(Gene,
-         log2fc_D2_v_D0,
-         log2fc_D7_v_D2,
-         log2fc_D7_v_D0) %>%
-  pivot_longer(-Gene,
-               names_to = "comparison",
-               values_to = "log2fc") %>%
+# ---------- LONG LOG2FC TABLE ----------
+log2fc_df <- df %>%
+  select(
+    Gene,
+    log2fc_D2_v_D0,
+    log2fc_D7_v_D2,
+    log2fc_D7_v_D0
+  ) %>%
+  pivot_longer(
+    cols = starts_with("log2fc_"),
+    names_to = "comparison",
+    values_to = "log2fc"
+  ) %>%
   mutate(
-    comparison = recode(comparison,
+    comparison = recode(
+      comparison,
       log2fc_D2_v_D0 = "D2vD0",
       log2fc_D7_v_D2 = "D7vD2",
       log2fc_D7_v_D0 = "D7vD0"
-    )
+    ),
+    comparison = factor(comparison, levels = comparison_levels)
   )
 
-# ---------- JOIN LOG2FC TO PATHWAYS ----------
-dot_df <- plot_df %>%
-  left_join(log_df, by = c("Gene","comparison"))
+# ---------- JOIN LOG2FC TO PATHWAY MEMBERSHIP ----------
+boxplot_df <- pathway_df %>%
+  left_join(log2fc_df, by = c("Gene", "comparison")) %>%
+  filter(!is.na(log2fc))
 
-# ---------- SCALE LOG2FC ----------
-max_count <- max(count_df$n_genes, na.rm = TRUE)
-max_fc <- max(abs(dot_df$log2fc), na.rm = TRUE)
+# ---------- BAR COUNTS ----------
+bar_df <- pathway_df %>%
+  count(pathway, comparison, color, name = "n_genes")
 
-dot_df <- dot_df %>%
-  mutate(
-    scaled_fc = (log2fc / max_fc) * max_count * 0.8
-  )
-
-# ---------- COLOR MAP ----------
-color_values <- unique(count_df$color)
-names(color_values) <- color_values
-
-# ---------- ORDER ----------
-pathway_order <- count_df %>%
+# ---------- ORDER PATHWAYS ----------
+pathway_order <- bar_df %>%
   group_by(pathway) %>%
-  summarise(total = sum(n_genes)) %>%
-  arrange(desc(total)) %>%
+  summarise(total_genes = sum(n_genes), .groups = "drop") %>%
+  arrange(desc(total_genes)) %>%
   pull(pathway)
 
-count_df$pathway <- factor(count_df$pathway, levels = pathway_order)
-dot_df$pathway <- factor(dot_df$pathway, levels = pathway_order)
+# ---------- FIXED X POSITIONS ----------
+comparison_offsets <- tibble(
+  comparison = factor(comparison_levels, levels = comparison_levels),
+  offset = c(-0.25, 0, 0.25)
+)
 
-# ---------- PLOT ----------
-p <- ggplot() +
+pathway_positions <- tibble(
+  pathway = factor(pathway_order, levels = pathway_order),
+  pathway_x = seq_along(pathway_order)
+)
 
-  # stacked bars
+bar_df <- bar_df %>%
+  mutate(
+    pathway = factor(pathway, levels = pathway_order),
+    comparison = factor(comparison, levels = comparison_levels)
+  ) %>%
+  left_join(pathway_positions, by = "pathway") %>%
+  left_join(comparison_offsets, by = "comparison") %>%
+  mutate(x_pos = pathway_x + offset)
+
+boxplot_df <- boxplot_df %>%
+  mutate(
+    pathway = factor(pathway, levels = pathway_order),
+    comparison = factor(comparison, levels = comparison_levels)
+  ) %>%
+  left_join(pathway_positions, by = "pathway") %>%
+  left_join(comparison_offsets, by = "comparison") %>%
+  mutate(x_pos = pathway_x + offset)
+
+# ---------- COLOR MAP ----------
+color_values <- bar_df %>%
+  distinct(color) %>%
+  pull(color)
+
+names(color_values) <- color_values
+
+# ---------- SHARED X SCALE ----------
+x_breaks <- pathway_positions$pathway_x
+x_labels <- as.character(pathway_positions$pathway)
+
+x_limits <- c(
+  min(pathway_positions$pathway_x) - 0.6,
+  max(pathway_positions$pathway_x) + 0.6
+)
+
+# ---------- TOP: LOG2FC BOXPLOTS ----------
+p_top <- ggplot(boxplot_df, aes(x = x_pos, y = log2fc, group = interaction(pathway, comparison))) +
+  geom_hline(yintercept = 0, linewidth = 0.3, linetype = "dashed") +
+  geom_boxplot(
+    width = 0.22,
+    outlier.size = 0.7,
+    fill = "white",
+    color = "black"
+  ) +
+  scale_x_continuous(
+    breaks = x_breaks,
+    labels = NULL,
+    limits = x_limits,
+    expand = c(0, 0)
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    y = "log2FC"
+  )
+
+# ---------- BOTTOM: STACKED BARS ----------
+p_bottom <- ggplot(bar_df, aes(x = x_pos, y = n_genes, fill = color)) +
   geom_col(
-    data = count_df,
-    aes(x = pathway, y = n_genes, fill = color, group = comparison),
-    position = position_dodge(width = 0.8),
+    width = 0.22,
     color = "black",
     linewidth = 0.2
   ) +
-
-  # gene dots
-  geom_point(
-    data = dot_df,
-    aes(x = pathway, y = scaled_fc, group = comparison),
-    position = position_jitterdodge(
-      jitter.width = 0.2,
-      dodge.width = 0.8
-    ),
-    color = "black",
-    size = 1.2,
-    alpha = 0.7
-  ) +
-
   scale_fill_manual(values = color_values) +
-  theme_bw() +
+  scale_x_continuous(
+    breaks = x_breaks,
+    labels = x_labels,
+    limits = x_limits,
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  theme_bw(base_size = 12) +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.position = "none"
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    legend.position = "none",
+    panel.grid.minor = element_blank()
   ) +
   labs(
-    y = "Gene count (bars) + scaled log2FC (points)",
-    x = "Pathway"
+    x = "Pathway",
+    y = "Number of unique genes"
   )
 
+# ---------- COMBINE ----------
+p <- p_top / p_bottom +
+  plot_layout(heights = c(1, 1.5))
+
 # ---------- SAVE ----------
-ggsave(outfile_png, p, width = 14, height = 7, dpi = 300)
-ggsave(outfile_pdf, p, width = 14, height = 7)
+ggsave(outfile_png, p, width = 14, height = 9, dpi = 300)
+ggsave(outfile_pdf, p, width = 14, height = 9)
