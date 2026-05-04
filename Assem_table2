@@ -3,17 +3,17 @@
 library(tidyverse)
 
 # ---------- HARDCODED FILE PATHS ----------
-gene_color_file <- "gene_colors.tsv"
+gene_color_file <- "gene_colors.csv"
 
-log2fc_d2_d0_file <- "D2_D0.tsv"
-log2fc_d7_d2_file <- "D7_D2.tsv"
-log2fc_d7_d0_file <- "D7_D0.tsv"
+log2fc_d2_d0_file <- "D2_D0.csv"
+log2fc_d7_d2_file <- "D7_D2.csv"
+log2fc_d7_d0_file <- "D7_D0.csv"
 
-pathways_d2_d0_file <- "pathways_D2_D0.tsv"
-pathways_d7_d2_file <- "pathways_D7_D2.tsv"
-pathways_d7_d0_file <- "pathways_D7_D0.tsv"
+pathways_d2_d0_file <- "pathways_D2_D0.csv"
+pathways_d7_d2_file <- "pathways_D7_D2.csv"
+pathways_d7_d0_file <- "pathways_D7_D0.csv"
 
-outfile <- "gene_colors_with_log2fc_and_pathways.tsv"
+outfile <- "gene_colors_with_log2fc_and_pathways.csv"
 
 # ---------- HARDCODED PATHWAYS TO FOCUS ON ----------
 focus_pathways <- c(
@@ -24,25 +24,25 @@ focus_pathways <- c(
 
 # ---------- HELPERS ----------
 read_log2fc <- function(file, new_colname) {
-  read_tsv(file, col_names = FALSE, show_col_types = FALSE) %>%
+  read_csv(file, show_col_types = FALSE) %>%
+    select(1, 2) %>%
     transmute(
-      Gene = as.character(X1),
-      !!new_colname := as.numeric(X2)
+      Gene = as.character(.[[1]]),
+      !!new_colname := as.numeric(.[[2]])
     ) %>%
     distinct(Gene, .keep_all = TRUE)
 }
 
 read_reactive_pathways <- function(file, new_colname) {
-  read_tsv(file, col_names = FALSE, show_col_types = FALSE) %>%
+  read_csv(file, show_col_types = FALSE) %>%
+    select(2, 13) %>%
     transmute(
-      pathway = as.character(X2),
-      genes = as.character(X13)
+      pathway = as.character(.[[1]]),
+      genes = as.character(.[[2]])
     ) %>%
     filter(pathway %in% focus_pathways) %>%
     separate_rows(genes, sep = ",") %>%
-    mutate(
-      Gene = str_trim(genes)
-    ) %>%
+    mutate(Gene = str_trim(genes)) %>%
     filter(!is.na(Gene), Gene != "") %>%
     group_by(Gene) %>%
     summarise(
@@ -52,7 +52,7 @@ read_reactive_pathways <- function(file, new_colname) {
 }
 
 # ---------- LOAD BASE ----------
-gene_colors <- read_tsv(gene_color_file, show_col_types = FALSE) %>%
+gene_colors <- read_csv(gene_color_file, show_col_types = FALSE) %>%
   mutate(Gene = as.character(Gene))
 
 # ---------- LOAD LOG2FC FILES ----------
@@ -75,4 +75,4 @@ out <- gene_colors %>%
   left_join(p_d7_d0, by = "Gene")
 
 # ---------- SAVE ----------
-write_tsv(out, outfile, na = "")
+write_csv(out, outfile, na = "")
