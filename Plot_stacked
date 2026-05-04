@@ -1,15 +1,12 @@
 #!/usr/bin/env Rscript
 
 library(tidyverse)
-library(patchwork)
 
 # ---------- FILES ----------
 infile <- "gene_colors_with_log2fc_and_pathways.tsv"
 
-outfile_png <- "stacked_pathway_barplot_with_log2fc_boxplots.png"
-outfile_pdf <- "stacked_pathway_barplot_with_log2fc_boxplots.pdf"
-
-comparison_levels <- c("D2vD0", "D7vD2", "D7vD0")
+outfile_png <- "reactome_pathway_dotplot.png"
+outfile_pdf <- "reactome_pathway_dotplot.pdf"
 
 # ---------- LOAD ----------
 df <- read_tsv(infile, show_col_types = FALSE) %>%
@@ -23,7 +20,7 @@ df <- read_tsv(infile, show_col_types = FALSE) %>%
   )
 
 # ---------- LONG PATHWAY TABLE ----------
-pathway_df <- df %>%
+plot_df <- df %>%
   select(
     Gene,
     color,
@@ -36,163 +33,59 @@ pathway_df <- df %>%
     names_to = "comparison",
     values_to = "pathway"
   ) %>%
-  mutate(
-    comparison = recode(
-      comparison,
-      pathways_D2_v_D0 = "D2vD0",
-      pathways_D7_v_D2 = "D7vD2",
-      pathways_D7_v_D0 = "D7vD0"
-    ),
-    comparison = factor(comparison, levels = comparison_levels)
-  ) %>%
   filter(!is.na(pathway), pathway != "") %>%
   separate_rows(pathway, sep = ",") %>%
   mutate(pathway = str_trim(pathway)) %>%
   filter(pathway != "") %>%
-  distinct(pathway, comparison, color, Gene)
-
-# ---------- LONG LOG2FC TABLE ----------
-log2fc_df <- df %>%
-  select(
-    Gene,
-    log2fc_D2_v_D0,
-    log2fc_D7_v_D2,
-    log2fc_D7_v_D0
-  ) %>%
-  pivot_longer(
-    cols = starts_with("log2fc_"),
-    names_to = "comparison",
-    values_to = "log2fc"
-  ) %>%
-  mutate(
-    comparison = recode(
-      comparison,
-      log2fc_D2_v_D0 = "D2vD0",
-      log2fc_D7_v_D2 = "D7vD2",
-      log2fc_D7_v_D0 = "D7vD0"
-    ),
-    comparison = factor(comparison, levels = comparison_levels)
-  )
-
-# ---------- JOIN LOG2FC TO PATHWAY MEMBERSHIP ----------
-boxplot_df <- pathway_df %>%
-  left_join(log2fc_df, by = c("Gene", "comparison")) %>%
-  filter(!is.na(log2fc))
-
-# ---------- BAR COUNTS ----------
-bar_df <- pathway_df %>%
-  count(pathway, comparison, color, name = "n_genes")
+  distinct(pathway, color, Gene) %>%
+  count(pathway, color, name = "n_genes")
 
 # ---------- ORDER PATHWAYS ----------
-pathway_order <- bar_df %>%
+pathway_order <- plot_df %>%
   group_by(pathway) %>%
   summarise(total_genes = sum(n_genes), .groups = "drop") %>%
   arrange(desc(total_genes)) %>%
   pull(pathway)
 
-# ---------- FIXED X POSITIONS ----------
-comparison_offsets <- tibble(
-  comparison = factor(comparison_levels, levels = comparison_levels),
-  offset = c(-0.25, 0, 0.25)
-)
-
-pathway_positions <- tibble(
-  pathway = factor(pathway_order, levels = pathway_order),
-  pathway_x = seq_along(pathway_order)
-)
-
-bar_df <- bar_df %>%
-  mutate(
-    pathway = factor(pathway, levels = pathway_order),
-    comparison = factor(comparison, levels = comparison_levels)
-  ) %>%
-  left_join(pathway_positions, by = "pathway") %>%
-  left_join(comparison_offsets, by = "comparison") %>%
-  mutate(x_pos = pathway_x + offset)
-
-boxplot_df <- boxplot_df %>%
-  mutate(
-    pathway = factor(pathway, levels = pathway_order),
-    comparison = factor(comparison, levels = comparison_levels)
-  ) %>%
-  left_join(pathway_positions, by = "pathway") %>%
-  left_join(comparison_offsets, by = "comparison") %>%
-  mutate(x_pos = pathway_x + offset)
-
-# ---------- COLOR MAP ----------
-color_values <- bar_df %>%
-  distinct(color) %>%
+# ---------- ORDER COLORS ----------
+color_order <- plot_df %>%
+  group_by(color) %>%
+  summarise(total_genes = sum(n_genes), .groups = "drop") %>%
+  arrange(desc(total_genes)) %>%
   pull(color)
 
-names(color_values) <- color_values
-
-# ---------- SHARED X SCALE ----------
-x_breaks <- pathway_positions$pathway_x
-x_labels <- as.character(pathway_positions$pathway)
-
-x_limits <- c(
-  min(pathway_positions$pathway_x) - 0.6,
-  max(pathway_positions$pathway_x) + 0.6
-)
-
-# ---------- TOP: LOG2FC BOXPLOTS ----------
-p_top <- ggplot(boxplot_df, aes(x = x_pos, y = log2fc, group = interaction(pathway, comparison))) +
-  geom_hline(yintercept = 0, linewidth = 0.3, linetype = "dashed") +
-  geom_boxplot(
-    width = 0.22,
-    outlier.size = 0.7,
-    fill = "white",
-    color = "black"
-  ) +
-  scale_x_continuous(
-    breaks = x_breaks,
-    labels = NULL,
-    limits = x_limits,
-    expand = c(0, 0)
-  ) +
-  theme_bw(base_size = 12) +
-  theme(
-    axis.title.x = element_blank(),
-    axis.text.x = element_blank(),
-    axis.ticks.x = element_blank(),
-    panel.grid.minor = element_blank()
-  ) +
-  labs(
-    y = "log2FC"
+plot_df <- plot_df %>%
+  mutate(
+    pathway = factor(pathway, levels = pathway_order),
+    color = factor(color, levels = color_order)
   )
 
-# ---------- BOTTOM: STACKED BARS ----------
-p_bottom <- ggplot(bar_df, aes(x = x_pos, y = n_genes, fill = color)) +
-  geom_col(
-    width = 0.22,
-    color = "black",
-    linewidth = 0.2
+# ---------- COLOR MAP ----------
+color_values <- levels(plot_df$color)
+names(color_values) <- color_values
+
+# ---------- PLOT ----------
+p <- ggplot(plot_df, aes(x = pathway, y = color)) +
+  geom_point(
+    aes(size = n_genes, color = color),
+    alpha = 0.9
   ) +
-  scale_fill_manual(values = color_values) +
-  scale_x_continuous(
-    breaks = x_breaks,
-    labels = x_labels,
-    limits = x_limits,
-    expand = c(0, 0)
-  ) +
-  scale_y_continuous(
-    expand = expansion(mult = c(0, 0.05))
-  ) +
+  scale_color_manual(values = color_values) +
+  scale_size_continuous(name = "Unique genes") +
   theme_bw(base_size = 12) +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-    legend.position = "none",
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "right",
     panel.grid.minor = element_blank()
   ) +
   labs(
-    x = "Pathway",
-    y = "Number of unique genes"
+    x = "Reactome pathway",
+    y = NULL
   )
 
-# ---------- COMBINE ----------
-p <- p_top / p_bottom +
-  plot_layout(heights = c(1, 1.5))
-
 # ---------- SAVE ----------
-ggsave(outfile_png, p, width = 14, height = 9, dpi = 300)
-ggsave(outfile_pdf, p, width = 14, height = 9)
+ggsave(outfile_png, p, width = 14, height = 7, dpi = 300)
+ggsave(outfile_pdf, p, width = 14, height = 7)
