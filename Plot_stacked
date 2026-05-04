@@ -12,7 +12,10 @@ outfile_pdf <- "reactome_pathway_dotplot_faceted.pdf"
 # ---------- LOAD ----------
 df <- read_tsv(infile, show_col_types = FALSE) %>%
   rename(Gene = 1, color = 2) %>%
-  mutate(Gene = as.character(Gene), color = as.character(color))
+  mutate(
+    Gene = as.character(Gene),
+    color = as.character(color)
+  )
 
 pathway_groups <- read_tsv(group_file, show_col_types = FALSE) %>%
   rename(
@@ -26,7 +29,10 @@ pathway_groups <- read_tsv(group_file, show_col_types = FALSE) %>%
 
 # ---------- LONG PATHWAY TABLE ----------
 plot_df <- df %>%
-  select(Gene, color, pathways_D2_v_D0, pathways_D7_v_D2, pathways_D7_v_D0) %>%
+  select(Gene, color,
+         pathways_D2_v_D0,
+         pathways_D7_v_D2,
+         pathways_D7_v_D0) %>%
   pivot_longer(
     cols = starts_with("pathways_"),
     names_to = "comparison",
@@ -81,6 +87,7 @@ p <- ggplot(plot_df, aes(x = pathway, y = color)) +
   scale_color_manual(values = color_values) +
   scale_size_continuous(name = "Unique genes") +
   guides(color = "none") +
+  coord_cartesian(clip = "off") +  # allow labels outside panel
   theme_bw(base_size = 12) +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
@@ -91,7 +98,9 @@ p <- ggplot(plot_df, aes(x = pathway, y = color)) +
     panel.grid.minor = element_blank(),
     strip.background = element_rect(fill = "grey90", color = "black"),
     strip.text.x = element_text(size = 10),
-    plot.margin = margin(t = 10, r = 10, b = 10, l = 60)
+
+    # extra left space so labels don't get cut
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 150)
   ) +
   labs(
     x = "Reactome pathway",
