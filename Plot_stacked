@@ -1,0 +1,98 @@
+#!/usr/bin/env Rscript
+
+library(tidyverse)
+
+# ---------- HARDCODED FILE PATHS ----------
+infile <- "gene_colors_with_log2fc_and_pathways.tsv"
+
+outfile_png <- "stacked_pathway_barplot.png"
+outfile_pdf <- "stacked_pathway_barplot.pdf"
+
+# ---------- COMPARISON ORDER ----------
+comparison_levels <- c(
+  "D2vD0",
+  "D7vD2",
+  "D7vD0"
+)
+
+# ---------- LOAD ----------
+df <- read_tsv(infile, show_col_types = FALSE) %>%
+  rename(
+    Gene = 1,
+    color = 2
+  ) %>%
+  mutate(
+    Gene = as.character(Gene),
+    color = as.character(color)
+  )
+
+# ---------- LONG PATHWAY TABLE ----------
+plot_df <- df %>%
+  select(
+    Gene,
+    color,
+    pathways_D2_v_D0,
+    pathways_D7_v_D2,
+    pathways_D7_v_D0
+  ) %>%
+  pivot_longer(
+    cols = starts_with("pathways_"),
+    names_to = "comparison",
+    values_to = "pathway"
+  ) %>%
+  mutate(
+    comparison = recode(
+      comparison,
+      pathways_D2_v_D0 = "D2vD0",
+      pathways_D7_v_D2 = "D7vD2",
+      pathways_D7_v_D0 = "D7vD0"
+    ),
+    comparison = factor(comparison, levels = comparison_levels)
+  ) %>%
+  filter(!is.na(pathway), pathway != "") %>%
+  separate_rows(pathway, sep = ",") %>%
+  mutate(pathway = str_trim(pathway)) %>%
+  filter(pathway != "") %>%
+  distinct(pathway, comparison, color, Gene) %>%
+  count(pathway, comparison, color, name = "n_genes")
+
+# ---------- COLOR MAP ----------
+color_values <- plot_df %>%
+  distinct(color) %>%
+  pull(color)
+
+names(color_values) <- color_values
+
+# ---------- ORDER PATHWAYS ----------
+pathway_order <- plot_df %>%
+  group_by(pathway) %>%
+  summarise(total_genes = sum(n_genes), .groups = "drop") %>%
+  arrange(desc(total_genes)) %>%
+  pull(pathway)
+
+plot_df <- plot_df %>%
+  mutate(pathway = factor(pathway, levels = pathway_order))
+
+# ---------- PLOT ----------
+p <- ggplot(plot_df, aes(x = pathway, y = n_genes, fill = color)) +
+  geom_col(position = "stack", color = "black", linewidth = 0.2) +
+  facet_grid(
+    cols = vars(comparison),
+    scales = "free_x",
+    space = "free_x"
+  ) +
+  scale_fill_manual(values = color_values) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    legend.position = "none",
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "Pathway",
+    y = "Number of unique genes"
+  )
+
+# ---------- SAVE ----------
+ggsave(outfile_png, p, width = 14, height = 7, dpi = 300)
+ggsave(outfile_pdf, p, width = 14, height = 7)
