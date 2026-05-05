@@ -1,0 +1,86 @@
+# Create conda environment
+conda create -n nanopore_16s -y python=3.9
+conda activate nanopore_16s
+
+# Install tools
+conda install -c bioconda -c conda-forge porechop filtlong emu minimap2 osfclient cutadapt
+
+# Download Emu database (once)
+mkdir -p ~/emu_db && cd ~/emu_db
+osf -p 56uf7 fetch osfstorage/emu-prebuilt/emu.tar
+tar -xvf emu.tar
+export EMU_DATABASE_DIR=~/emu_db   # Add to ~/.bashrc
+
+
+
+
+#!/bin/bash
+# ===================================================================
+# Best-in-class script for full-length V1-V9 16S nanopore single-end reads
+# Pre-process (Porechop + Filtlong) → Emu species-level abundance
+# Usage: ./nanopore_16s_full_v1v9.sh <input_fastq_dir> <output_dir> [threads]
+# ===================================================================
+
+set -euo pipefail
+
+INPUT_DIR="${1:-.}"
+OUTPUT_DIR="${2:-results}"
+THREADS="${3:-8}"
+
+mkdir -p "$OUTPUT_DIR"/{cleaned,emu}
+
+echo "=== Starting full-length V1-V9 16S nanopore pipeline ==="
+echo "Input: $INPUT_DIR"
+echo "Output: $OUTPUT_DIR"
+echo "Threads: $THREADS"
+echo "EMU_DB: $EMU_DATABASE_DIR (set EMU_DATABASE_DIR if not found)"
+
+for fastq in "$INPUT_DIR"/*.fastq* "$INPUT_DIR"/*/*.fastq*; do
+    [[ -f "$fastq" ]] || continue
+    sample=$(basename "$fastq" | sed 's/\.fastq.*//')
+
+    echo "→ Processing sample: $sample"
+
+    # 1. Trim adapters, barcodes, and primers (Porechop is excellent for ONT amplicons)
+    porechop -i "$fastq" \
+             -o "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" \
+             --threads "$THREADS" \
+             --discard_untrimmed 2>/dev/null || true   # Some kits already trimmed
+
+    # 2. Filter for full-length high-quality reads (critical for V1-V9)
+    filtlong \
+        --min_length 1200 \
+        --max_length 1900 \
+        --min_mean_q 12 \
+        --trim 20 \
+        "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" > "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq"
+
+    # 3. Run Emu (species-level abundance, optimized for ONT full-length 16S)
+    emu abundance \
+        --type map-ont \
+        "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq" \
+        --db "$EMU_DATABASE_DIR" \
+        --threads "$THREADS" \
+        --min-abundance 0.0001 \
+        --output "$OUTPUT_DIR/emu/${sample}"
+
+    # Optional: compress filtered reads to save space
+    gzip -f "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq"
+
+    echo "   ✓ Done: $OUTPUT_DIR/emu/${sample}/full_length_rel-abundance.tsv"
+done
+
+echo "=== Pipeline finished! ==="
+echo "Species abundance tables → $OUTPUT_DIR/emu/*/"
+echo "Cleaned reads → $OUTPUT_DIR/cleaned/"
+echo "Tip: Use 'emu collapse-taxonomy' to summarize at genus/phylum level if needed."
+
+
+
+conda activate nanopore_16s
+./nanopore_16s_full_v1v9.sh /path/to/your/fastq_files /path/to/results 16
+
+
+
+
+
