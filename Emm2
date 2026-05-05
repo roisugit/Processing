@@ -1,0 +1,66 @@
+#!/bin/bash
+# ===================================================================
+# FIXED: Best-in-class script for full-length V1-V9 16S nanopore single-end reads
+# Corrected Emu command line (input file LAST, --output-dir + --output-basename)
+# Usage: ./nanopore_16s_full_v1v9_fixed.sh <input_fastq_dir> <output_dir> [threads]
+# ===================================================================
+
+set -euo pipefail
+
+INPUT_DIR="${1:-.}"
+OUTPUT_DIR="${2:-results}"
+THREADS="${3:-8}"
+
+# Remove any trailing slash to prevent // paths
+OUTPUT_DIR="${OUTPUT_DIR%/}"
+
+mkdir -p "$OUTPUT_DIR"/cleaned "$OUTPUT_DIR"/emu
+
+echo "=== Starting FIXED full-length V1-V9 16S nanopore pipeline ==="
+echo "Input: $INPUT_DIR"
+echo "Output: $OUTPUT_DIR"
+echo "Threads: $THREADS"
+echo "EMU_DB: $EMU_DATABASE_DIR"
+
+for fastq in "$INPUT_DIR"/*.fastq* "$INPUT_DIR"/*/*.fastq*; do
+    [[ -f "$fastq" ]] || continue
+    sample=$(basename "$fastq" | sed 's/\.fastq.*//')
+
+    echo "→ Processing sample: $sample"
+
+    # 1. Trim adapters/primers/barcodes (Porechop)
+    echo "   DEBUG: porechop -i \"$fastq\" -o \"$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz\" --threads $THREADS --discard_untrimmed"
+    porechop -i "$fastq" \
+             -o "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" \
+             --threads "$THREADS" \
+             --discard_untrimmed 2>/dev/null || true
+
+    # 2. Filter for full-length high-quality reads (V1-V9 range)
+    echo "   DEBUG: filtlong --min_length 1200 --max_length 1900 --min_mean_q 12 --trim 20 ..."
+    filtlong \
+        --min_length 1200 \
+        --max_length 1900 \
+        --min_mean_q 12 \
+        --trim 20 \
+        "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" > "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq"
+
+    # 3. FIXED Emu command (this was the source of the error)
+    echo "   DEBUG: emu abundance [options] \"$OUTPUT_DIR/cleaned/${sample}_filtered.fastq\""
+    emu abundance \
+        --type map-ont \
+        --db "$EMU_DATABASE_DIR" \
+        --threads "$THREADS" \
+        --min-abundance 0.0001 \
+        --output-dir "$OUTPUT_DIR/emu" \
+        --output-basename "$sample" \
+        "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq"
+
+    # Clean up space
+    gzip -f "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq" 2>/dev/null || true
+
+    echo "   ✓ Done → $OUTPUT_DIR/emu/${sample}_rel-abundance.tsv"
+done
+
+echo "=== Pipeline finished successfully! ==="
+echo "Species abundance tables → $OUTPUT_DIR/emu/*_rel-abundance.tsv"
+echo "Cleaned reads → $OUTPUT_DIR/cleaned/"
