@@ -1,99 +1,15 @@
-#!/bin/bash
-# ===================================================================
-# FIXED v3: Full-length V1-V9 16S nanopore pipeline
-# Relaxed + tunable filtlong parameters + automatic fallback if zero reads
-# Usage: ./nanopore_16s_full_v1v9_fixed3.sh <input_fastq_dir> <output_dir> [threads]
-# ===================================================================
+# 1. Install Nextflow (one-time)
+curl -s https://get.nextflow.io | bash
+sudo mv nextflow /usr/local/bin/
 
-set -euo pipefail
+# 2. (Optional but recommended) Pull the latest workflow
+nextflow pull epi2me-labs/wf-16s
 
-INPUT_DIR="${1:-.}"
-OUTPUT_DIR="${2:-results}"
-THREADS="${3:-8}"
-OUTPUT_DIR="${OUTPUT_DIR%/}"
-
-# ==================== TUNABLE FILTER PARAMETERS ====================
-# Change these here if you still get zero filtered reads
-MIN_LENGTH=1000          # Most papers use 1000–1300 for V1-V9
-MAX_LENGTH=2200          # Allows some concatemers / longer reads
-MIN_MEAN_Q=9             # 9 works well for ONT SUP basecalling
-TRIM_BP=10               # Gentle end-trimming
-# ===================================================================
-
-mkdir -p "$OUTPUT_DIR"/cleaned "$OUTPUT_DIR"/emu
-
-echo "=== Starting FIXED v3 full-length V1-V9 16S nanopore pipeline ==="
-echo "Input: $INPUT_DIR"
-echo "Output: $OUTPUT_DIR"
-echo "Threads: $THREADS"
-echo "Filtlong settings → min_length=${MIN_LENGTH} max_length=${MAX_LENGTH} min_mean_q=${MIN_MEAN_Q} trim=${TRIM_BP}"
-echo "EMU_DB: ${EMU_DATABASE_DIR:-NOT SET}"
-
-for fastq in "$INPUT_DIR"/*.fastq* "$INPUT_DIR"/*/*.fastq*; do
-    [[ -f "$fastq" ]] || continue
-    sample=$(basename "$fastq" | sed 's/\.fastq.*//')
-
-    echo "→ Processing sample: $sample"
-
-    # 1. Trim adapters/primers/barcodes
-    echo "   Running porechop..."
-    porechop -i "$fastq" \
-             -o "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" \
-             --threads "$THREADS" 2>&1 | tee "$OUTPUT_DIR/cleaned/${sample}_porechop.log"
-
-    # Fallback if porechop produced nothing
-    if [ ! -s "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" ] || \
-       [ "$(zcat "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" 2>/dev/null | wc -l)" -eq 0 ]; then
-        echo "   ⚠️  Porechop empty → using original FASTQ"
-        cp -f "$fastq" "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz"
-    fi
-
-    trimmed_count=$(zcat "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" | wc -l)
-    trimmed_count=$((trimmed_count / 4))
-    echo "   → ${trimmed_count} reads after trimming"
-
-    # 2. Filter with relaxed (tunable) parameters
-    echo "   Running filtlong (relaxed V1-V9 settings)..."
-    filtlong \
-        --min_length "$MIN_LENGTH" \
-        --max_length "$MAX_LENGTH" \
-        --min_mean_q "$MIN_MEAN_Q" \
-        --trim "$TRIM_BP" \
-        "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" > "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq"
-
-    filtered_count=$(wc -l < "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq")
-    filtered_count=$((filtered_count / 4))
-    echo "   → ${filtered_count} reads passed length/quality filtering"
-
-    # 3. Automatic fallback if filtlong gave zero reads
-    if [ "$filtered_count" -eq 0 ]; then
-        echo "   ❌  ZERO reads passed filtering! Using trimmed reads for Emu (suboptimal but lets you proceed)"
-        echo "   💡  Suggestion: edit the script and lower MIN_LENGTH to 800 or MIN_MEAN_Q to 8, then re-run"
-        cp -f "$OUTPUT_DIR/cleaned/${sample}_trimmed.fastq.gz" "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq.gz"
-        gunzip -f "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq.gz"
-    else
-        echo "   ✓ Good filtering!"
-    fi
-
-    # 4. Run Emu
-    echo "   Running emu abundance..."
-    emu abundance \
-        --type map-ont \
-        --db "$EMU_DATABASE_DIR" \
-        --threads "$THREADS" \
-        --min-abundance 0.0001 \
-        --output-dir "$OUTPUT_DIR/emu" \
-        --output-basename "$sample" \
-        "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq"
-
-    # Cleanup
-    gzip -f "$OUTPUT_DIR/cleaned/${sample}_filtered.fastq" 2>/dev/null || true
-
-    echo "   ✓ Done → $OUTPUT_DIR/emu/${sample}_rel-abundance.tsv"
-done
-
-echo "=== Pipeline finished! ==="
-echo "Check the printed read counts above for each sample."
-echo "If filtered reads = 0 again, lower the MIN_LENGTH / MIN_MEAN_Q values at the top of the script."
-echo "Species tables → $OUTPUT_DIR/emu/*_rel-abundance.tsv"
-echo "Logs → $OUTPUT_DIR/cleaned/*_porechop.log"
+# 3. Run it on your data
+nextflow run epi2me-labs/wf-16s \
+    --fastq "/path/to/your/fastq_directory" \
+    --classifier minimap2 \
+    --database_set ncbi_16s_18s \
+    --outdir "./wf16s_results" \
+    -profile standard \
+    -resume
