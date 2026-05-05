@@ -1,0 +1,6 @@
+$url = "https://mediadive.dsmz.de/api/strains"
+
+$response = Invoke-RestMethod -Uri $url -Method Get
+
+# Save raw JSON
+$response | ConvertTo-Json -Depth 10 | Out-File "mediadive_strains.json"
