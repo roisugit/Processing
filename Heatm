@@ -1,0 +1,241 @@
+# combine_ec_heatmap_bins.py
+# pip install pandas openpyxl scipy
+
+from pathlib import Path
+import re
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
+from scipy.spatial.distance import pdist
+from scipy.cluster.hierarchy import linkage, leaves_list
+
+
+INPUT_DIR = Path("csv_files")          # folder containing your CSVs
+OUTPUT_XLSX = "ec_heatmap_bins.xlsx"
+BIN_SIZES = [5, 10]
+
+
+def normalize_ec(value):
+    """Extract and normalize EC numbers like 1.1.1.1 or 1.1.1.-."""
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip()
+    match = re.search(r"\b\d+\.(?:\d+|-)\.(?:\d+|-)\.(?:\d+|-)\b", text)
+
+    if not match:
+        return None
+
+    return match.group(0)
+
+
+def read_ec_files(input_dir):
+    organism_to_ecs = {}
+
+    for file in sorted(input_dir.glob("*.csv")):
+        organism = file.stem
+        df = pd.read_csv(file)
+
+        first_col = df.columns[0]
+        ecs = (
+            df[first_col]
+            .map(normalize_ec)
+            .dropna()
+            .drop_duplicates()
+            .sort_values()
+            .tolist()
+        )
+
+        organism_to_ecs[organism] = set(ecs)
+
+    return organism_to_ecs
+
+
+def build_presence_matrix(organism_to_ecs):
+    all_ecs = sorted(set().union(*organism_to_ecs.values()))
+
+    matrix = pd.DataFrame(index=all_ecs)
+
+    for organism, ecs in organism_to_ecs.items():
+        matrix[organism] = [1 if ec in ecs else 0 for ec in all_ecs]
+
+    matrix.index.name = "EC number"
+    return matrix
+
+
+def reorder_by_clustering(matrix):
+    """Cluster EC rows and organism columns to make the heatmap easier to read."""
+    if matrix.shape[0] > 2:
+        row_order = leaves_list(linkage(pdist(matrix.values, metric="jaccard"), method="average"))
+        matrix = matrix.iloc[row_order]
+
+    if matrix.shape[1] > 2:
+        col_order = leaves_list(linkage(pdist(matrix.T.values, metric="jaccard"), method="average"))
+        matrix = matrix.iloc[:, col_order]
+
+    return matrix
+
+
+def jaccard_similarity(a, b):
+    if not a and not b:
+        return 1.0
+    return len(a & b) / len(a | b)
+
+
+def make_bins(organism_to_ecs, bin_size):
+    """
+    Greedy bins of organisms based on EC overlap.
+
+    Representative = organism in the bin with the best balance of:
+    - high overlap with the shared ECs of the bin
+    - low overhang, meaning extra ECs not shared by the bin
+    """
+    remaining = set(organism_to_ecs)
+    bins = []
+
+    while remaining:
+        seed = max(remaining, key=lambda x: len(organism_to_ecs[x]))
+        group = [seed]
+        remaining.remove(seed)
+
+        while remaining and len(group) < bin_size:
+            group_union = set().union(*(organism_to_ecs[g] for g in group))
+
+            next_org = max(
+                remaining,
+                key=lambda x: jaccard_similarity(group_union, organism_to_ecs[x])
+            )
+
+            group.append(next_org)
+            remaining.remove(next_org)
+
+        shared_ecs = set.intersection(*(organism_to_ecs[g] for g in group))
+        union_ecs = set.union(*(organism_to_ecs[g] for g in group))
+
+        rep_scores = []
+
+        for org in group:
+            ecs = organism_to_ecs[org]
+
+            overlap_with_shared = len(ecs & shared_ecs)
+            overhang = len(ecs - shared_ecs)
+
+            # Higher score is better.
+            score = overlap_with_shared - overhang
+
+            rep_scores.append({
+                "organism": org,
+                "score": score,
+                "overlap_with_shared": overlap_with_shared,
+                "overhang": overhang,
+                "total_ecs": len(ecs)
+            })
+
+        representative = sorted(
+            rep_scores,
+            key=lambda x: (x["score"], x["overlap_with_shared"], -x["overhang"]),
+            reverse=True
+        )[0]["organism"]
+
+        bins.append({
+            "bin_size_requested": bin_size,
+            "members": group,
+            "representative": representative,
+            "num_members": len(group),
+            "shared_ec_count": len(shared_ecs),
+            "union_ec_count": len(union_ecs),
+            "representative_ec_count": len(organism_to_ecs[representative]),
+            "representative_overhang": len(organism_to_ecs[representative] - shared_ecs),
+            "shared_ecs": "; ".join(sorted(shared_ecs)),
+            "union_ecs": "; ".join(sorted(union_ecs))
+        })
+
+    return bins
+
+
+def write_excel(matrix, organism_to_ecs, output_xlsx):
+    with pd.ExcelWriter(output_xlsx, engine="openpyxl") as writer:
+        matrix.to_excel(writer, sheet_name="EC_heatmap")
+
+        summary = pd.DataFrame({
+            "organism": list(organism_to_ecs.keys()),
+            "EC_count": [len(v) for v in organism_to_ecs.values()]
+        }).sort_values("organism")
+
+        summary.to_excel(writer, sheet_name="organism_summary", index=False)
+
+        for bin_size in BIN_SIZES:
+            bins = make_bins(organism_to_ecs, bin_size)
+
+            bin_summary = pd.DataFrame([
+                {
+                    "bin": i + 1,
+                    "bin_size_requested": b["bin_size_requested"],
+                    "num_members": b["num_members"],
+                    "representative": b["representative"],
+                    "shared_ec_count": b["shared_ec_count"],
+                    "union_ec_count": b["union_ec_count"],
+                    "representative_ec_count": b["representative_ec_count"],
+                    "representative_overhang": b["representative_overhang"],
+                    "members": "; ".join(b["members"])
+                }
+                for i, b in enumerate(bins)
+            ])
+
+            bin_summary.to_excel(writer, sheet_name=f"bins_{bin_size}_summary", index=False)
+
+            bin_ecs = pd.DataFrame([
+                {
+                    "bin": i + 1,
+                    "representative": b["representative"],
+                    "shared_ecs": b["shared_ecs"],
+                    "union_ecs": b["union_ecs"]
+                }
+                for i, b in enumerate(bins)
+            ])
+
+            bin_ecs.to_excel(writer, sheet_name=f"bins_{bin_size}_ECs", index=False)
+
+    apply_heatmap_style(output_xlsx)
+
+
+def apply_heatmap_style(output_xlsx):
+    wb = load_workbook(output_xlsx)
+    ws = wb["EC_heatmap"]
+
+    present_fill = PatternFill(start_color="63BE7B", end_color="63BE7B", fill_type="solid")
+    absent_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+    for row in ws.iter_rows(min_row=2, min_col=2):
+        for cell in row:
+            if cell.value == 1:
+                cell.fill = present_fill
+            elif cell.value == 0:
+                cell.fill = absent_fill
+
+    ws.freeze_panes = "B2"
+    ws.auto_filter.ref = ws.dimensions
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
+
+    wb.save(output_xlsx)
+
+
+def main():
+    organism_to_ecs = read_ec_files(INPUT_DIR)
+
+    if not organism_to_ecs:
+        raise ValueError(f"No CSV files found in {INPUT_DIR}")
+
+    matrix = build_presence_matrix(organism_to_ecs)
+    matrix = reorder_by_clustering(matrix)
+
+    write_excel(matrix, organism_to_ecs, OUTPUT_XLSX)
+
+    print(f"Done. Wrote: {OUTPUT_XLSX}")
+
+
+if __name__ == "__main__":
+    main()
