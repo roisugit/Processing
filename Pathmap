@@ -1,0 +1,51 @@
+import pandas as pd
+import requests
+
+# Download pathway -> EC mappings
+url = "https://rest.kegg.jp/link/enzyme/pathway"
+
+text = requests.get(url).text
+
+records = []
+
+for line in text.strip().split("\n"):
+    pathway, ec = line.split("\t")
+
+    pathway = pathway.replace("path:", "")
+    ec = ec.replace("ec:", "")
+
+    records.append({
+        "pathway_id": pathway,
+        "ec_number": ec
+    })
+
+df = pd.DataFrame(records)
+
+# Get pathway names
+pathway_names = requests.get(
+    "https://rest.kegg.jp/list/pathway"
+).text
+
+name_records = []
+
+for line in pathway_names.strip().split("\n"):
+    pid, pname = line.split("\t")
+
+    pid = pid.replace("path:", "")
+
+    name_records.append({
+        "pathway_id": pid,
+        "pathway_name": pname
+    })
+
+names_df = pd.DataFrame(name_records)
+
+merged = df.merge(names_df, on="pathway_id")
+
+merged = merged[
+    ["pathway_id", "pathway_name", "ec_number"]
+]
+
+merged.to_csv("pathway_ec_map.csv", index=False)
+
+print("Wrote pathway_ec_map.csv")
