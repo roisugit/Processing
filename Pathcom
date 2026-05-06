@@ -1,0 +1,320 @@
+# combine_ec_pathway_heatmap_bins.py
+# pip install pandas openpyxl scipy scikit-learn
+
+from pathlib import Path
+import re
+import pandas as pd
+import numpy as np
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
+from sklearn.metrics.pairwise import cosine_similarity
+
+
+INPUT_DIR = Path("csv_files")
+PATHWAY_MAP = Path("pathway_ec_map.csv")
+OUTPUT_XLSX = "ec_pathway_heatmap_bins.xlsx"
+BIN_SIZES = [5, 10]
+
+
+def normalize_ec(value):
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip()
+    match = re.search(r"\b\d+\.(?:\d+|-)\.(?:\d+|-)\.(?:\d+|-)\b", text)
+
+    return match.group(0) if match else None
+
+
+def read_ec_files(input_dir):
+    organism_to_ecs = {}
+
+    for file in sorted(input_dir.glob("*.csv")):
+        organism = file.stem
+        df = pd.read_csv(file)
+
+        first_col = df.columns[0]
+
+        ecs = (
+            df[first_col]
+            .map(normalize_ec)
+            .dropna()
+            .drop_duplicates()
+            .tolist()
+        )
+
+        organism_to_ecs[organism] = set(ecs)
+
+    return organism_to_ecs
+
+
+def read_pathway_map(pathway_map_file):
+    """
+    Required columns:
+      pathway_id,pathway_name,ec_number
+    """
+    df = pd.read_csv(pathway_map_file)
+
+    required = {"pathway_id", "pathway_name", "ec_number"}
+    missing = required - set(df.columns)
+
+    if missing:
+        raise ValueError(f"Pathway map missing columns: {missing}")
+
+    df["ec_number"] = df["ec_number"].map(normalize_ec)
+    df = df.dropna(subset=["ec_number"])
+
+    return df.drop_duplicates()
+
+
+def build_ec_presence_matrix(organism_to_ecs):
+    all_ecs = sorted(set().union(*organism_to_ecs.values()))
+    matrix = pd.DataFrame(index=all_ecs)
+
+    for organism, ecs in organism_to_ecs.items():
+        matrix[organism] = [1 if ec in ecs else 0 for ec in all_ecs]
+
+    matrix.index.name = "EC number"
+    return matrix
+
+
+def build_pathway_completeness(organism_to_ecs, pathway_df):
+    pathway_records = []
+
+    pathway_groups = pathway_df.groupby(["pathway_id", "pathway_name"])
+
+    for organism, organism_ecs in organism_to_ecs.items():
+        for (pathway_id, pathway_name), group in pathway_groups:
+            pathway_ecs = set(group["ec_number"])
+
+            present_ecs = organism_ecs & pathway_ecs
+            missing_ecs = pathway_ecs - organism_ecs
+
+            completeness = len(present_ecs) / len(pathway_ecs) if pathway_ecs else 0
+
+            pathway_records.append({
+                "organism": organism,
+                "pathway_id": pathway_id,
+                "pathway_name": pathway_name,
+                "pathway_ec_count": len(pathway_ecs),
+                "present_ec_count": len(present_ecs),
+                "missing_ec_count": len(missing_ecs),
+                "completeness": completeness,
+                "present_ecs": "; ".join(sorted(present_ecs)),
+                "missing_ecs": "; ".join(sorted(missing_ecs)),
+            })
+
+    long_df = pd.DataFrame(pathway_records)
+
+    completeness_matrix = long_df.pivot_table(
+        index="organism",
+        columns="pathway_name",
+        values="completeness",
+        fill_value=0
+    )
+
+    return long_df, completeness_matrix
+
+
+def make_pathway_bins(completeness_matrix, organism_to_ecs, bin_size):
+    """
+    Greedy pathway-completeness binning.
+
+    Organisms are grouped by similarity of their pathway completeness profiles,
+    not by raw EC overlap.
+
+    Representative is the organism closest to the bin's average pathway profile.
+    """
+    remaining = set(completeness_matrix.index)
+    bins = []
+
+    while remaining:
+        # Start with organism that has the highest total pathway completeness.
+        seed = completeness_matrix.loc[list(remaining)].sum(axis=1).idxmax()
+
+        members = [seed]
+        remaining.remove(seed)
+
+        while remaining and len(members) < bin_size:
+            bin_profile = completeness_matrix.loc[members].mean(axis=0).values.reshape(1, -1)
+            candidate_profiles = completeness_matrix.loc[list(remaining)]
+
+            sims = cosine_similarity(bin_profile, candidate_profiles.values)[0]
+
+            best_candidate = candidate_profiles.index[np.argmax(sims)]
+            members.append(best_candidate)
+            remaining.remove(best_candidate)
+
+        bin_matrix = completeness_matrix.loc[members]
+        bin_average = bin_matrix.mean(axis=0)
+
+        distances = ((bin_matrix - bin_average) ** 2).sum(axis=1) ** 0.5
+        representative = distances.idxmin()
+
+        shared_ecs = set.intersection(*(organism_to_ecs[m] for m in members))
+        union_ecs = set.union(*(organism_to_ecs[m] for m in members))
+
+        rep_ecs = organism_to_ecs[representative]
+        representative_overhang = rep_ecs - shared_ecs
+
+        bins.append({
+            "bin_size_requested": bin_size,
+            "num_members": len(members),
+            "members": members,
+            "representative": representative,
+            "mean_pathway_completeness": bin_average.mean(),
+            "median_pathway_completeness": bin_average.median(),
+            "representative_distance_to_bin_average": distances.loc[representative],
+            "shared_ec_count": len(shared_ecs),
+            "union_ec_count": len(union_ecs),
+            "representative_ec_count": len(rep_ecs),
+            "representative_overhang_count": len(representative_overhang),
+            "shared_ecs": "; ".join(sorted(shared_ecs)),
+            "union_ecs": "; ".join(sorted(union_ecs)),
+            "representative_overhang_ecs": "; ".join(sorted(representative_overhang)),
+        })
+
+    return bins
+
+
+def apply_excel_styling(output_xlsx):
+    wb = load_workbook(output_xlsx)
+
+    green = PatternFill(start_color="63BE7B", end_color="63BE7B", fill_type="solid")
+    white = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+    if "EC_heatmap" in wb.sheetnames:
+        ws = wb["EC_heatmap"]
+        for row in ws.iter_rows(min_row=2, min_col=2):
+            for cell in row:
+                if cell.value == 1:
+                    cell.fill = green
+                elif cell.value == 0:
+                    cell.fill = white
+        ws.freeze_panes = "B2"
+        ws.auto_filter.ref = ws.dimensions
+
+    if "pathway_completeness" in wb.sheetnames:
+        ws = wb["pathway_completeness"]
+        ws.freeze_panes = "B2"
+        ws.auto_filter.ref = ws.dimensions
+
+    for ws in wb.worksheets:
+        for col in ws.columns:
+            max_len = max(
+                len(str(cell.value)) if cell.value is not None else 0
+                for cell in col
+            )
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 50)
+
+    wb.save(output_xlsx)
+
+
+def write_excel(
+    ec_matrix,
+    pathway_long_df,
+    completeness_matrix,
+    organism_to_ecs,
+    output_xlsx
+):
+    with pd.ExcelWriter(output_xlsx, engine="openpyxl") as writer:
+        ec_matrix.to_excel(writer, sheet_name="EC_heatmap")
+
+        completeness_matrix.to_excel(writer, sheet_name="pathway_completeness")
+
+        pathway_long_df.to_excel(
+            writer,
+            sheet_name="pathway_details",
+            index=False
+        )
+
+        organism_summary = pd.DataFrame({
+            "organism": list(organism_to_ecs.keys()),
+            "EC_count": [len(v) for v in organism_to_ecs.values()]
+        }).sort_values("organism")
+
+        organism_summary.to_excel(
+            writer,
+            sheet_name="organism_summary",
+            index=False
+        )
+
+        for bin_size in BIN_SIZES:
+            bins = make_pathway_bins(
+                completeness_matrix,
+                organism_to_ecs,
+                bin_size
+            )
+
+            bin_summary = pd.DataFrame([
+                {
+                    "bin": i + 1,
+                    "bin_size_requested": b["bin_size_requested"],
+                    "num_members": b["num_members"],
+                    "representative": b["representative"],
+                    "mean_pathway_completeness": b["mean_pathway_completeness"],
+                    "median_pathway_completeness": b["median_pathway_completeness"],
+                    "representative_distance_to_bin_average": b["representative_distance_to_bin_average"],
+                    "shared_ec_count": b["shared_ec_count"],
+                    "union_ec_count": b["union_ec_count"],
+                    "representative_ec_count": b["representative_ec_count"],
+                    "representative_overhang_count": b["representative_overhang_count"],
+                    "members": "; ".join(b["members"]),
+                }
+                for i, b in enumerate(bins)
+            ])
+
+            bin_summary.to_excel(
+                writer,
+                sheet_name=f"bins_{bin_size}_summary",
+                index=False
+            )
+
+            bin_ecs = pd.DataFrame([
+                {
+                    "bin": i + 1,
+                    "representative": b["representative"],
+                    "shared_ecs": b["shared_ecs"],
+                    "union_ecs": b["union_ecs"],
+                    "representative_overhang_ecs": b["representative_overhang_ecs"],
+                }
+                for i, b in enumerate(bins)
+            ])
+
+            bin_ecs.to_excel(
+                writer,
+                sheet_name=f"bins_{bin_size}_ECs",
+                index=False
+            )
+
+    apply_excel_styling(output_xlsx)
+
+
+def main():
+    organism_to_ecs = read_ec_files(INPUT_DIR)
+
+    if not organism_to_ecs:
+        raise ValueError(f"No CSV files found in {INPUT_DIR}")
+
+    pathway_df = read_pathway_map(PATHWAY_MAP)
+
+    ec_matrix = build_ec_presence_matrix(organism_to_ecs)
+
+    pathway_long_df, completeness_matrix = build_pathway_completeness(
+        organism_to_ecs,
+        pathway_df
+    )
+
+    write_excel(
+        ec_matrix,
+        pathway_long_df,
+        completeness_matrix,
+        organism_to_ecs,
+        OUTPUT_XLSX
+    )
+
+    print(f"Done. Wrote: {OUTPUT_XLSX}")
+
+
+if __name__ == "__main__":
+    main()
