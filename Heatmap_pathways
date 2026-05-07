@@ -1,4 +1,4 @@
-# combine_ec_heatmap.py
+# combine_ec_heatmap_bins.py
 # pip install pandas openpyxl scipy
 
 from pathlib import Path
@@ -81,7 +81,7 @@ def reorder_by_clustering(matrix):
 
 def write_excel(matrix, organism_to_ecs, output_xlsx):
     with pd.ExcelWriter(output_xlsx, engine="openpyxl") as writer:
-        matrix.to_excel(writer, sheet_name="heatmap")
+        matrix.to_excel(writer, sheet_name="EC_heatmap")
 
         summary = pd.DataFrame({
             "organism": list(organism_to_ecs.keys()),
@@ -95,10 +95,19 @@ def write_excel(matrix, organism_to_ecs, output_xlsx):
 
 def apply_heatmap_style(output_xlsx):
     wb = load_workbook(output_xlsx)
-    ws = wb["heatmap"]
+    ws = wb["EC_heatmap"]
 
-    present_fill = PatternFill(start_color="63BE7B", end_color="63BE7B", fill_type="solid")
-    absent_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    present_fill = PatternFill(
+        start_color="63BE7B",
+        end_color="63BE7B",
+        fill_type="solid"
+    )
+
+    absent_fill = PatternFill(
+        start_color="FFFFFF",
+        end_color="FFFFFF",
+        fill_type="solid"
+    )
 
     for row in ws.iter_rows(min_row=2, min_col=2):
         for cell in row:
@@ -111,7 +120,10 @@ def apply_heatmap_style(output_xlsx):
     ws.auto_filter.ref = ws.dimensions
 
     for col in ws.columns:
-        max_len = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col)
+        max_len = max(
+            len(str(cell.value)) if cell.value is not None else 0
+            for cell in col
+        )
         ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
 
     wb.save(output_xlsx)
@@ -133,4 +145,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
