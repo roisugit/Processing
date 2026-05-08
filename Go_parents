@@ -3,159 +3,108 @@ import requests
 import time
 from collections import defaultdict
 
-# =========================
-# SETTINGS
-# =========================
-
 INPUT_CSV = "input.csv"
-OUTPUT_CSV = "output_with_go_levels.csv"
-
-# Name of the column containing GO IDs
+OUTPUT_CSV = "go_levels_lookup.csv"
 GO_COLUMN = "GO_ID"
 
-# QuickGO API base
 BASE = "https://www.ebi.ac.uk/QuickGO/services/ontology/go/terms"
 
-# =========================
-# API FUNCTIONS
-# =========================
 
 def get_json(url):
-    """
-    Retrieve JSON from QuickGO API
-    """
-    r = requests.get(
-        url,
-        headers={"Accept": "application/json"}
-    )
-
+    r = requests.get(url, headers={"Accept": "application/json"})
     r.raise_for_status()
-
     return r.json()
 
 
-def get_term_info(go_id):
-    """
-    Get main GO term information
-    """
-    url = f"{BASE}/{go_id}"
-
+def get_term(go_id):
+    url = f"{BASE}/{go_id}/complete"
     data = get_json(url)
 
-    if not data.get("results"):
+    results = data.get("results", [])
+    if not results:
         return None
 
-    return data["results"][0]
+    return results[0]
 
 
-def get_ancestors(go_id):
-    """
-    Get ancestor GO terms
-    """
-    url = f"{BASE}/{go_id}/ancestors"
-
-    data = get_json(url)
-
-    return data.get("results", [])
-
-
-# =========================
-# GO LEVEL EXTRACTION
-# =========================
-
-def extract_levels(go_id):
-    """
-    Extract ontology levels for a GO term.
-
-    Returns dictionary:
-        GO_level_1
-        GO_level_2
-        etc.
-
-    Includes ALL terms at each level.
-    """
-
-    term = get_term_info(go_id)
-    ancestors = get_ancestors(go_id)
-
-    all_terms = ancestors + ([term] if term else [])
-
+def collect_ancestors(term):
     levels = defaultdict(list)
 
-    for t in all_terms:
-
+    def add_term(t):
+        go_id = t.get("id")
+        name = t.get("name")
         depth = t.get("depth")
 
-        if depth is None:
-            continue
+        if go_id and name and depth is not None:
+            level = depth + 1
+            label = f"{go_id} | {name}"
+            if label not in levels[level]:
+                levels[level].append(label)
 
-        # GO root = level 1
-        level = depth + 1
+    add_term(term)
 
-        label = f"{t.get('id')} | {t.get('name')}"
+    for ancestor in term.get("ancestors", []):
+        add_term(ancestor)
 
-        if label not in levels[level]:
-            levels[level].append(label)
+    return levels
 
-    # Convert to dataframe-friendly dict
-    level_dict = {}
+
+def extract_levels(go_id):
+    term = get_term(go_id)
+
+    if term is None:
+        return {
+            "input_GO": go_id,
+            "lookup_status": "not_found"
+        }
+
+    levels = collect_ancestors(term)
+
+    row = {
+        "input_GO": go_id,
+        "input_GO_name": term.get("name"),
+        "ontology": term.get("aspect"),
+        "lookup_status": "found"
+    }
 
     for level in sorted(levels.keys()):
+        row[f"GO_level_{level}"] = "; ".join(sorted(levels[level]))
 
-        level_name = f"GO_level_{level}"
+    return row
 
-        # Join multiple parents with semicolon
-        level_dict[level_name] = "; ".join(sorted(levels[level]))
-
-    return level_dict
-
-
-# =========================
-# MAIN
-# =========================
 
 def main():
-
-    print("Reading input CSV...")
-
     df = pd.read_csv(INPUT_CSV)
 
-    all_level_rows = []
+    go_ids = (
+        df[GO_COLUMN]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .drop_duplicates()
+        .tolist()
+    )
 
-    total = len(df)
+    rows = []
 
-    for i, go_id in enumerate(df[GO_COLUMN]):
-
-        go_id = str(go_id).strip()
-
-        print(f"[{i+1}/{total}] Processing {go_id}")
+    for i, go_id in enumerate(go_ids):
+        print(f"[{i+1}/{len(go_ids)}] {go_id}")
 
         try:
-
-            levels = extract_levels(go_id)
-
+            rows.append(extract_levels(go_id))
         except Exception as e:
+            rows.append({
+                "input_GO": go_id,
+                "lookup_status": "error",
+                "error_message": str(e)
+            })
 
-            levels = {
-                "GO_lookup_error": str(e)
-            }
-
-        all_level_rows.append(levels)
-
-        # avoid hammering API
         time.sleep(0.1)
 
-    print("Combining results...")
-
-    levels_df = pd.DataFrame(all_level_rows)
-
-    out = pd.concat([df, levels_df], axis=1)
-
-    print(f"Writing output: {OUTPUT_CSV}")
-
+    out = pd.DataFrame(rows)
     out.to_csv(OUTPUT_CSV, index=False)
 
-    print("Done.")
+    print(f"Saved new GO lookup CSV: {OUTPUT_CSV}")
 
 
 if __name__ == "__main__":
