@@ -1,79 +1,130 @@
 import pandas as pd
 import requests
-import time
 from collections import defaultdict
+from functools import lru_cache
 
 INPUT_CSV = "input.csv"
 OUTPUT_CSV = "go_levels_lookup.csv"
 GO_COLUMN = "GO_ID"
 
-BASE = "https://www.ebi.ac.uk/QuickGO/services/ontology/go/terms"
+OBO_URL = "http://purl.obolibrary.org/obo/go/go-basic.obo"
+OBO_FILE = "go-basic.obo"
+
+INCLUDE_PART_OF = True
 
 
-def get_json(url):
-    r = requests.get(url, headers={"Accept": "application/json"})
+def download_obo():
+    print("Downloading GO ontology...")
+    r = requests.get(OBO_URL)
     r.raise_for_status()
-    return r.json()
+    with open(OBO_FILE, "w", encoding="utf-8") as f:
+        f.write(r.text)
 
 
-def get_term(go_id):
-    url = f"{BASE}/{go_id}/complete"
-    data = get_json(url)
+def parse_obo():
+    terms = {}
+    current = None
 
-    results = data.get("results", [])
-    if not results:
-        return None
+    with open(OBO_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
 
-    return results[0]
+            if line == "[Term]":
+                current = {
+                    "id": None,
+                    "name": None,
+                    "namespace": None,
+                    "parents": []
+                }
+
+            elif line == "":
+                if current and current["id"]:
+                    terms[current["id"]] = current
+                current = None
+
+            elif current is not None:
+                if line.startswith("id: GO:"):
+                    current["id"] = line.replace("id: ", "")
+
+                elif line.startswith("name: "):
+                    current["name"] = line.replace("name: ", "")
+
+                elif line.startswith("namespace: "):
+                    current["namespace"] = line.replace("namespace: ", "")
+
+                elif line.startswith("is_a: "):
+                    parent = line.split()[1]
+                    current["parents"].append(parent)
+
+                elif INCLUDE_PART_OF and line.startswith("relationship: part_of "):
+                    parent = line.split()[2]
+                    current["parents"].append(parent)
+
+    return terms
 
 
-def collect_ancestors(term):
-    levels = defaultdict(list)
+@lru_cache(None)
+def get_paths_to_root(go_id):
+    term = TERMS.get(go_id)
 
-    def add_term(t):
-        go_id = t.get("id")
-        name = t.get("name")
-        depth = t.get("depth")
+    if term is None:
+        return []
 
-        if go_id and name and depth is not None:
-            level = depth + 1
-            label = f"{go_id} | {name}"
-            if label not in levels[level]:
-                levels[level].append(label)
+    parents = term["parents"]
 
-    add_term(term)
+    if not parents:
+        return [[go_id]]
 
-    for ancestor in term.get("ancestors", []):
-        add_term(ancestor)
+    paths = []
 
-    return levels
+    for parent in parents:
+        parent_paths = get_paths_to_root(parent)
+
+        for path in parent_paths:
+            paths.append(path + [go_id])
+
+    return paths
 
 
 def extract_levels(go_id):
-    term = get_term(go_id)
-
-    if term is None:
+    if go_id not in TERMS:
         return {
             "input_GO": go_id,
             "lookup_status": "not_found"
         }
 
-    levels = collect_ancestors(term)
+    paths = get_paths_to_root(go_id)
+
+    levels = defaultdict(list)
+
+    for path in paths:
+        for i, term_id in enumerate(path):
+            level = i + 1
+            term = TERMS[term_id]
+            label = f"{term_id} | {term['name']}"
+
+            if label not in levels[level]:
+                levels[level].append(label)
 
     row = {
         "input_GO": go_id,
-        "input_GO_name": term.get("name"),
-        "ontology": term.get("aspect"),
+        "input_GO_name": TERMS[go_id]["name"],
+        "namespace": TERMS[go_id]["namespace"],
         "lookup_status": "found"
     }
 
-    for level in sorted(levels.keys()):
+    for level in sorted(levels):
         row[f"GO_level_{level}"] = "; ".join(sorted(levels[level]))
 
     return row
 
 
 def main():
+    download_obo()
+
+    global TERMS
+    TERMS = parse_obo()
+
     df = pd.read_csv(INPUT_CSV)
 
     go_ids = (
@@ -87,24 +138,14 @@ def main():
 
     rows = []
 
-    for i, go_id in enumerate(go_ids):
-        print(f"[{i+1}/{len(go_ids)}] {go_id}")
-
-        try:
-            rows.append(extract_levels(go_id))
-        except Exception as e:
-            rows.append({
-                "input_GO": go_id,
-                "lookup_status": "error",
-                "error_message": str(e)
-            })
-
-        time.sleep(0.1)
+    for go_id in go_ids:
+        print(f"Processing {go_id}")
+        rows.append(extract_levels(go_id))
 
     out = pd.DataFrame(rows)
     out.to_csv(OUTPUT_CSV, index=False)
 
-    print(f"Saved new GO lookup CSV: {OUTPUT_CSV}")
+    print(f"Saved: {OUTPUT_CSV}")
 
 
 if __name__ == "__main__":
