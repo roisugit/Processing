@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from pathlib import Path
+
+
+# =========================================================
+# USER SETTINGS
+# =========================================================
+
+# Use "" or None for missing datasets/files
+
+datasets = [
+
+    # -------------------------
+    # Comparison 1
+    # -------------------------
+    {
+        "comparison": "comparison_1",
+        "direction": "up",
+        "go_file": "comp1_up_GO.csv",
+        "gene_file": "comp1_up_genes.csv",
+    },
+
+    {
+        "comparison": "comparison_1",
+        "direction": "down",
+        "go_file": "",
+        "gene_file": "",
+    },
+
+    # -------------------------
+    # Comparison 2
+    # -------------------------
+    {
+        "comparison": "comparison_2",
+        "direction": "up",
+        "go_file": "comp2_up_GO.csv",
+        "gene_file": "comp2_up_genes.csv",
+    },
+
+    {
+        "comparison": "comparison_2",
+        "direction": "down",
+        "go_file": "comp2_down_GO.csv",
+        "gene_file": "comp2_down_genes.csv",
+    },
+
+    # -------------------------
+    # Comparison 3
+    # -------------------------
+    {
+        "comparison": "comparison_3",
+        "direction": "up",
+        "go_file": "",
+        "gene_file": "",
+    },
+
+    {
+        "comparison": "comparison_3",
+        "direction": "down",
+        "go_file": "comp3_down_GO.csv",
+        "gene_file": "comp3_down_genes.csv",
+    },
+]
+
+# Shared GO facet annotation file
+facet_file = "GO_facets.csv"
+
+# Output directory
+output_dir = Path("heatmap_outputs")
+output_dir.mkdir(exist_ok=True)
+
+
+# =========================================================
+# COLUMN SETTINGS
+# Python uses 0-based indexing
+# =========================================================
+
+# GO enrichment file
+GO_TERM_COL = 1          # 2nd column
+GO_GENES_COL = 10        # 11th column
+GO_LOG2FE_COL = 11       # 12th column
+
+# Gene file
+GENE_ID_COL = 0          # 1st column
+GENE_LOG2FC_COL = 1      # 2nd column
+
+# Facet annotation file
+FACET_GO_TERM_COL = 0    # 1st column
+FACET_GROUP_COL = 1      # 2nd column
+
+
+# =========================================================
+# LOAD FACET FILE
+# =========================================================
+
+print("Loading facet file...")
+
+facet_df = pd.read_csv(facet_file)
+
+facet_df = facet_df.iloc[:, [FACET_GO_TERM_COL, FACET_GROUP_COL]]
+
+facet_df.columns = [
+    "go_term",
+    "facet"
+]
+
+facet_df["go_term"] = facet_df["go_term"].astype(str)
+facet_df["facet"] = facet_df["facet"].astype(str)
+
+
+# =========================================================
+# PARSE ALL FILES
+# =========================================================
+
+go_records = []
+gene_records = []
+go_gene_links = []
+
+print("Parsing datasets...")
+
+for ds in datasets:
+
+    comparison = ds["comparison"]
+    direction = ds["direction"]
+
+    go_file = ds["go_file"]
+    gene_file = ds["gene_file"]
+
+    # -----------------------------------------------------
+    # Skip missing datasets
+    # -----------------------------------------------------
+
+    if not go_file or not gene_file:
+        print(f"Skipping {comparison} {direction}: missing file.")
+        continue
+
+    # -----------------------------------------------------
+    # Skip nonexistent files
+    # -----------------------------------------------------
+
+    if not Path(go_file).exists():
+        print(f"Skipping {comparison} {direction}: GO file not found.")
+        continue
+
+    if not Path(gene_file).exists():
+        print(f"Skipping {comparison} {direction}: gene file not found.")
+        continue
+
+    label = f"{comparison}_{direction}"
+
+    print(f"Loading {label}")
+
+    # -----------------------------------------------------
+    # Read files
+    # -----------------------------------------------------
+
+    go_df = pd.read_csv(go_file)
+    gene_df = pd.read_csv(gene_file)
+
+    # -----------------------------------------------------
+    # Parse gene log2FC file
+    # -----------------------------------------------------
+
+    gene_fc = gene_df.iloc[:, [
+        GENE_ID_COL,
+        GENE_LOG2FC_COL
+    ]].copy()
+
+    gene_fc.columns = [
+        "gene_id",
+        "gene_log2FC"
+    ]
+
+    gene_fc["gene_id"] = gene_fc["gene_id"].astype(str)
+
+    gene_fc["comparison"] = comparison
+    gene_fc["direction"] = direction
+    gene_fc["dataset"] = label
+
+    gene_records.append(gene_fc)
+
+    # -----------------------------------------------------
+    # Parse GO enrichment file
+    # -----------------------------------------------------
+
+    for _, row in go_df.iterrows():
+
+        go_term = str(row.iloc[GO_TERM_COL])
+
+        gene_list_raw = str(row.iloc[GO_GENES_COL])
+
+        go_log2fe = row.iloc[GO_LOG2FE_COL]
+
+        # Split comma-delimited genes
+        genes = [
+            g.strip()
+            for g in gene_list_raw.split(",")
+            if g.strip()
+            and g.strip().lower() != "nan"
+        ]
+
+        # Store GO info
+        go_records.append({
+            "go_term": go_term,
+            "go_log2_fold_enrichment": go_log2fe,
+            "comparison": comparison,
+            "direction": direction,
+            "dataset": label,
+        })
+
+        # Store GO-gene relationships
+        for gene in genes:
+
+            go_gene_links.append({
+                "go_term": go_term,
+                "gene_id": gene,
+                "comparison": comparison,
+                "direction": direction,
+                "dataset": label,
+            })
+
+
+# =========================================================
+# BUILD DATAFRAMES
+# =========================================================
+
+print("Building dataframes...")
+
+go_long = pd.DataFrame(go_records)
+
+gene_long = pd.concat(
+    gene_records,
+    ignore_index=True
+)
+
+go_gene_long = pd.DataFrame(go_gene_links)
+
+# Merge facet annotations
+go_long = go_long.merge(
+    facet_df,
+    on="go_term",
+    how="left"
+)
+
+go_gene_long = go_gene_long.merge(
+    facet_df,
+    on="go_term",
+    how="left"
+)
+
+# Convert numeric columns
+gene_long["gene_log2FC"] = pd.to_numeric(
+    gene_long["gene_log2FC"],
+    errors="coerce"
+)
+
+go_long["go_log2_fold_enrichment"] = pd.to_numeric(
+    go_long["go_log2_fold_enrichment"],
+    errors="coerce"
+)
+
+
+# =========================================================
+# HEATMAP 1
+# GO TERM ENRICHMENT
+# =========================================================
+
+print("Generating GO enrichment heatmap...")
+
+go_matrix = go_long.pivot_table(
+    index=["facet", "go_term"],
+    columns="dataset",
+    values="go_log2_fold_enrichment",
+    aggfunc="mean"
+)
+
+plt.figure(
+    figsize=(
+        10,
+        max(6, 0.25 * go_matrix.shape[0])
+    )
+)
+
+sns.heatmap(
+    go_matrix,
+    cmap="viridis",
+    linewidths=0.2,
+    linecolor="lightgray",
+    cbar_kws={
+        "label": "GO log2 fold enrichment"
+    }
+)
+
+plt.title("GO term enrichment heatmap")
+
+plt.xlabel("Dataset")
+plt.ylabel("Facet / GO term")
+
+plt.tight_layout()
+
+plt.savefig(
+    output_dir / "GO_term_log2_fold_enrichment_heatmap.png",
+    dpi=300
+)
+
+plt.close()
+
+
+# =========================================================
+# HEATMAP 2
+# GENE LOG2FC
+# =========================================================
+
+print("Generating gene log2FC heatmaps...")
+
+merged = go_gene_long.merge(
+    gene_long,
+    on=[
+        "gene_id",
+        "comparison",
+        "direction",
+        "dataset"
+    ],
+    how="left"
+)
+
+for dataset_name, sub in merged.groupby("dataset"):
+
+    print(f"Generating heatmap for {dataset_name}")
+
+    matrix = sub.pivot_table(
+        index=["facet", "go_term"],
+        columns="gene_id",
+        values="gene_log2FC",
+        aggfunc="mean"
+    )
+
+    # Remove empty rows/columns
+    matrix = matrix.dropna(axis=0, how="all")
+    matrix = matrix.dropna(axis=1, how="all")
+
+    if matrix.empty:
+        print(f"Skipping {dataset_name}: empty matrix.")
+        continue
+
+    plt.figure(
+        figsize=(
+            max(10, 0.25 * matrix.shape[1]),
+            max(6, 0.25 * matrix.shape[0])
+        )
+    )
+
+    sns.heatmap(
+        matrix,
+        cmap="vlag",
+        center=0,
+        linewidths=0.1,
+        linecolor="lightgray",
+        cbar_kws={
+            "label": "Gene log2FC"
+        }
+    )
+
+    plt.title(f"Gene log2FC heatmap: {dataset_name}")
+
+    plt.xlabel("Gene ID")
+    plt.ylabel("Facet / GO term")
+
+    plt.tight_layout()
+
+    outname = f"{dataset_name}_gene_log2FC_heatmap.png"
+
+    plt.savefig(
+        output_dir / outname,
+        dpi=300
+    )
+
+    plt.close()
+
+
+# =========================================================
+# SAVE PARSED TABLES
+# =========================================================
+
+print("Saving parsed tables...")
+
+go_long.to_csv(
+    output_dir / "parsed_GO_terms_long.csv",
+    index=False
+)
+
+gene_long.to_csv(
+    output_dir / "parsed_gene_log2FC_long.csv",
+    index=False
+)
+
+merged.to_csv(
+    output_dir / "GO_gene_gene_log2FC_long.csv",
+    index=False
+)
+
+
+# =========================================================
+# DONE
+# =========================================================
+
+print()
+print("Done.")
+print(f"Outputs saved in: {output_dir}")
