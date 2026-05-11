@@ -1,10 +1,11 @@
 # =========================================================
-# GO term + gene log2FC heatmaps
+# Combined GO term + gene log2FC heatmap
 # =========================================================
 
 library(tidyverse)
 library(pheatmap)
 library(viridisLite)
+library(RColorBrewer)
 
 
 # =========================================================
@@ -12,13 +13,13 @@ library(viridisLite)
 # =========================================================
 
 datasets <- tribble(
-  ~comparison,      ~direction, ~go_file,              ~gene_file,
-  "comparison_1",   "up",       "comp1_up_GO.csv",     "comp1_up_genes.csv",
-  "comparison_1",   "down",     "",                    "",
-  "comparison_2",   "up",       "comp2_up_GO.csv",     "comp2_up_genes.csv",
-  "comparison_2",   "down",     "comp2_down_GO.csv",   "comp2_down_genes.csv",
-  "comparison_3",   "up",       "",                    "",
-  "comparison_3",   "down",     "comp3_down_GO.csv",   "comp3_down_genes.csv"
+  ~comparison,    ~direction, ~go_file,              ~gene_file,
+  "comparison_1", "up",       "comp1_up_GO.csv",     "comp1_up_genes.csv",
+  "comparison_1", "down",     "",                    "",
+  "comparison_2", "up",       "comp2_up_GO.csv",     "comp2_up_genes.csv",
+  "comparison_2", "down",     "comp2_down_GO.csv",   "comp2_down_genes.csv",
+  "comparison_3", "up",       "",                    "",
+  "comparison_3", "down",     "comp3_down_GO.csv",   "comp3_down_genes.csv"
 )
 
 facet_file <- "GO_facets.csv"
@@ -32,7 +33,6 @@ GO_LOG2FE_THRESHOLD <- 3
 
 # =========================================================
 # COLUMN SETTINGS
-# R uses 1-based indexing
 # =========================================================
 
 GO_TERM_COL <- 2
@@ -47,19 +47,19 @@ FACET_GROUP_COL <- 2
 
 
 # =========================================================
-# HELPER FUNCTION
+# HELPER
 # =========================================================
 
 clean_heatmap_matrix <- function(mat, fill_value = 0) {
   mat[is.nan(mat)] <- NA
   mat[is.infinite(mat)] <- NA
   mat[is.na(mat)] <- fill_value
-  return(mat)
+  mat
 }
 
 
 # =========================================================
-# LOAD FACET FILE
+# LOAD FACETS
 # =========================================================
 
 facet_df <- read_csv(facet_file, show_col_types = FALSE) %>%
@@ -74,7 +74,7 @@ facet_df <- read_csv(facet_file, show_col_types = FALSE) %>%
 
 
 # =========================================================
-# LOAD GENE COLOR FILE
+# LOAD GENE COLORS
 # =========================================================
 
 gene_colors_df <- read_tsv(gene_colors_file, show_col_types = FALSE) %>%
@@ -120,7 +120,6 @@ for (i in seq_len(nrow(datasets))) {
   }
 
   dataset_name <- paste(comparison, direction, sep = "_")
-
   message("Loading ", dataset_name)
 
   go_df <- read_csv(go_file, show_col_types = FALSE)
@@ -133,10 +132,7 @@ for (i in seq_len(nrow(datasets))) {
     ) %>%
     mutate(
       gene_id = as.character(gene_id),
-      gene_log2FC = as.numeric(gene_log2FC),
-      comparison = comparison,
-      direction = direction,
-      dataset = dataset_name
+      gene_log2FC = as.numeric(gene_log2FC)
     )
 
   gene_long_list[[dataset_name]] <- gene_long
@@ -145,10 +141,7 @@ for (i in seq_len(nrow(datasets))) {
     transmute(
       go_term = as.character(.data[[names(go_df)[GO_TERM_COL]]]),
       gene_list = as.character(.data[[names(go_df)[GO_GENES_COL]]]),
-      go_log2_fold_enrichment = as.numeric(.data[[names(go_df)[GO_LOG2FE_COL]]]),
-      comparison = comparison,
-      direction = direction,
-      dataset = dataset_name
+      go_log2_fold_enrichment = as.numeric(.data[[names(go_df)[GO_LOG2FE_COL]]])
     ) %>%
     filter(
       !is.na(go_log2_fold_enrichment),
@@ -161,218 +154,155 @@ for (i in seq_len(nrow(datasets))) {
 
   go_gene_links <- go_long %>%
     separate_rows(gene_list, sep = ",") %>%
-    mutate(
-      gene_id = str_trim(gene_list)
-    ) %>%
+    mutate(gene_id = str_trim(gene_list)) %>%
     filter(
       !is.na(gene_id),
       gene_id != "",
       tolower(gene_id) != "nan"
     ) %>%
-    select(
-      go_term,
-      gene_id,
-      comparison,
-      direction,
-      dataset
-    )
+    select(go_term, gene_id)
 
   go_gene_list[[dataset_name]] <- go_gene_links
 }
 
 
 # =========================================================
-# COMBINE TABLES
+# COMBINE
 # =========================================================
 
 go_long <- bind_rows(go_long_list) %>%
+  group_by(go_term) %>%
+  summarise(
+    go_log2_fold_enrichment = mean(go_log2_fold_enrichment, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
   left_join(facet_df, by = "go_term") %>%
-  mutate(
-    facet = replace_na(facet, "Unannotated")
-  )
+  mutate(facet = replace_na(facet, "Unannotated"))
 
-gene_long <- bind_rows(gene_long_list)
+gene_long <- bind_rows(gene_long_list) %>%
+  group_by(gene_id) %>%
+  summarise(
+    gene_log2FC = mean(gene_log2FC, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 go_gene_long <- bind_rows(go_gene_list) %>%
-  left_join(facet_df, by = "go_term") %>%
-  mutate(
-    facet = replace_na(facet, "Unannotated")
-  )
-
-
-# =========================================================
-# GO TERM HEATMAP
-# =========================================================
-
-go_matrix_df <- go_long %>%
-  unite("row_name", facet, go_term, sep = " | ", remove = FALSE) %>%
-  select(row_name, dataset, go_log2_fold_enrichment) %>%
   distinct() %>%
-  pivot_wider(
-    names_from = dataset,
-    values_from = go_log2_fold_enrichment
-  )
-
-go_matrix <- go_matrix_df %>%
-  column_to_rownames("row_name") %>%
-  as.matrix()
-
-go_matrix <- clean_heatmap_matrix(go_matrix, fill_value = 0)
-
-if (nrow(go_matrix) > 1 && ncol(go_matrix) > 1) {
-
-  png(
-    file.path(output_dir, "GO_term_log2_fold_enrichment_heatmap.png"),
-    width = 1800,
-    height = max(1200, 25 * nrow(go_matrix)),
-    res = 200
-  )
-
-  pheatmap(
-    go_matrix,
-    color = viridis(100),
-    cluster_rows = TRUE,
-    cluster_cols = TRUE,
-    main = paste0(
-      "GO term log2 fold enrichment, threshold >= ",
-      GO_LOG2FE_THRESHOLD
-    ),
-    na_col = "white",
-    fontsize_row = 7
-  )
-
-  dev.off()
-
-} else if (nrow(go_matrix) > 0 && ncol(go_matrix) > 0) {
-
-  png(
-    file.path(output_dir, "GO_term_log2_fold_enrichment_heatmap.png"),
-    width = 1800,
-    height = max(1200, 25 * nrow(go_matrix)),
-    res = 200
-  )
-
-  pheatmap(
-    go_matrix,
-    color = viridis(100),
-    cluster_rows = FALSE,
-    cluster_cols = FALSE,
-    main = paste0(
-      "GO term log2 fold enrichment, threshold >= ",
-      GO_LOG2FE_THRESHOLD
-    ),
-    na_col = "white",
-    fontsize_row = 7
-  )
-
-  dev.off()
-
-} else {
-  message("Skipping GO enrichment heatmap: no GO terms passed threshold.")
-}
+  left_join(go_long, by = "go_term")
 
 
 # =========================================================
-# GENE LOG2FC HEATMAPS
-# One heatmap per dataset
+# BUILD ONE BIG GENE LOG2FC MATRIX
 # =========================================================
 
 merged <- go_gene_long %>%
-  left_join(
-    gene_long,
-    by = c("gene_id", "comparison", "direction", "dataset")
-  )
+  left_join(gene_long, by = "gene_id")
 
-for (dataset_name in unique(merged$dataset)) {
-
-  sub <- merged %>%
-    filter(dataset == dataset_name)
-
-  matrix_df <- sub %>%
-    unite("row_name", facet, go_term, sep = " | ", remove = FALSE) %>%
-    select(row_name, gene_id, gene_log2FC) %>%
-    group_by(row_name, gene_id) %>%
-    summarise(
-      gene_log2FC = ifelse(
-        all(is.na(gene_log2FC)),
-        NA_real_,
-        mean(gene_log2FC, na.rm = TRUE)
-      ),
-      .groups = "drop"
-    ) %>%
-    pivot_wider(
-      names_from = gene_id,
-      values_from = gene_log2FC
-    )
-
-  matrix <- matrix_df %>%
-    column_to_rownames("row_name") %>%
-    as.matrix()
-
-  matrix <- matrix[
-    rowSums(!is.na(matrix)) > 0,
-    colSums(!is.na(matrix)) > 0,
-    drop = FALSE
-  ]
-
-  if (nrow(matrix) == 0 || ncol(matrix) == 0) {
-    message("Skipping ", dataset_name, ": empty matrix.")
-    next
-  }
-
-  matrix <- clean_heatmap_matrix(matrix, fill_value = 0)
-
-  genes_in_matrix <- colnames(matrix)
-
-  annotation_col <- tibble(gene_id = genes_in_matrix) %>%
-    left_join(gene_colors_df, by = "gene_id") %>%
-    mutate(
-      gene_color = replace_na(gene_color, "#FFFFFF")
-    ) %>%
-    column_to_rownames("gene_id")
-
-  annotation_colors <- list(
-    gene_color = setNames(
-      unique(annotation_col$gene_color),
-      unique(annotation_col$gene_color)
-    )
-  )
-
-  png(
-    file.path(output_dir, paste0(dataset_name, "_gene_log2FC_heatmap.png")),
-    width = max(1800, 25 * ncol(matrix)),
-    height = max(1200, 25 * nrow(matrix)),
-    res = 200
-  )
-
-  pheatmap(
-    matrix,
-    color = colorRampPalette(c("blue", "white", "red"))(100),
-    cluster_rows = nrow(matrix) > 1,
-    cluster_cols = ncol(matrix) > 1,
-    main = paste0(
-      "Gene log2FC: ",
-      dataset_name,
-      ", GO threshold >= ",
-      GO_LOG2FE_THRESHOLD
+matrix_df <- merged %>%
+  unite("row_name", facet, go_term, sep = " | ", remove = FALSE) %>%
+  select(row_name, gene_id, gene_log2FC) %>%
+  group_by(row_name, gene_id) %>%
+  summarise(
+    gene_log2FC = ifelse(
+      all(is.na(gene_log2FC)),
+      NA_real_,
+      mean(gene_log2FC, na.rm = TRUE)
     ),
-    na_col = "white",
-    fontsize_row = 7,
-    fontsize_col = 6,
-    annotation_col = annotation_col,
-    annotation_colors = annotation_colors
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = gene_id,
+    values_from = gene_log2FC
   )
 
-  dev.off()
-}
+mat <- matrix_df %>%
+  column_to_rownames("row_name") %>%
+  as.matrix()
+
+mat <- mat[
+  rowSums(!is.na(mat)) > 0,
+  colSums(!is.na(mat)) > 0,
+  drop = FALSE
+]
+
+mat <- clean_heatmap_matrix(mat, fill_value = 0)
 
 
 # =========================================================
-# SAVE PARSED TABLES
+# ROW ANNOTATION: GO LOG2 FOLD ENRICHMENT
+# COLUMN ANNOTATION: GENE COLORS
 # =========================================================
 
-write_csv(go_long, file.path(output_dir, "parsed_GO_terms_long.csv"))
-write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_long.csv"))
-write_csv(merged, file.path(output_dir, "GO_gene_gene_log2FC_long.csv"))
+row_annotation <- go_long %>%
+  unite("row_name", facet, go_term, sep = " | ", remove = FALSE) %>%
+  select(row_name, GO_log2FE = go_log2_fold_enrichment, Facet = facet) %>%
+  distinct(row_name, .keep_all = TRUE) %>%
+  filter(row_name %in% rownames(mat)) %>%
+  column_to_rownames("row_name")
 
-message("Done. Outputs saved in: ", output_dir)
+row_annotation <- row_annotation[rownames(mat), , drop = FALSE]
+
+genes_in_matrix <- colnames(mat)
+
+col_annotation <- tibble(gene_id = genes_in_matrix) %>%
+  left_join(gene_colors_df, by = "gene_id") %>%
+  mutate(
+    Gene_group = replace_na(gene_color, "#FFFFFF")
+  ) %>%
+  select(gene_id, Gene_group) %>%
+  column_to_rownames("gene_id")
+
+col_annotation <- col_annotation[genes_in_matrix, , drop = FALSE]
+
+annotation_colors <- list(
+  GO_log2FE = viridis(100),
+  Gene_group = setNames(
+    unique(col_annotation$Gene_group),
+    unique(col_annotation$Gene_group)
+  )
+)
+
+
+# =========================================================
+# PLOT ONE COMBINED HEATMAP
+# =========================================================
+
+png(
+  file.path(output_dir, "combined_GO_gene_heatmap.png"),
+  width = max(2200, 25 * ncol(mat)),
+  height = max(1600, 25 * nrow(mat)),
+  res = 200
+)
+
+pheatmap(
+  mat,
+  color = colorRampPalette(c("blue", "white", "red"))(100),
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  treeheight_row = 0,
+  treeheight_col = 0,
+  annotation_row = row_annotation,
+  annotation_col = col_annotation,
+  annotation_colors = annotation_colors,
+  main = paste0(
+    "GO terms and genes, GO log2FE >= ",
+    GO_LOG2FE_THRESHOLD
+  ),
+  na_col = "white",
+  fontsize_row = 7,
+  fontsize_col = 6,
+  border_color = NA
+)
+
+dev.off()
+
+
+# =========================================================
+# SAVE TABLES
+# =========================================================
+
+write_csv(go_long, file.path(output_dir, "parsed_GO_terms_combined.csv"))
+write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_combined.csv"))
+write_csv(merged, file.path(output_dir, "GO_gene_combined_long.csv"))
+
+message("Done. Combined heatmap saved in: ", output_dir)
