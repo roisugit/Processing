@@ -1,8 +1,5 @@
 # =========================================================
-# Combined GO + gene log2FC heatmap
-# GO panels by facet
-# GO log2FC + gene log2FC shown together
-# Genes ordered by gene group color, then clustered
+# g:Profiler-style GO + gene log2FC heatmap
 # =========================================================
 
 library(tidyverse)
@@ -31,16 +28,12 @@ gene_colors_file <- "gene_colors.tsv"
 output_dir <- "heatmap_outputs"
 dir.create(output_dir, showWarnings = FALSE)
 
-# Keep GO terms with absolute GO log2 fold enrichment >= this value
 GO_LOG2FE_THRESHOLD <- 3
-
-# If GO enrichment values are always positive, this makes down files negative
 SIGN_GO_BY_DIRECTION <- TRUE
 
 
 # =========================================================
 # COLUMN SETTINGS
-# R uses 1-based indexing
 # =========================================================
 
 GO_TERM_COL <- 2
@@ -55,19 +48,22 @@ FACET_GROUP_COL <- 2
 
 
 # =========================================================
-# COLOR SETTINGS
+# COLORS
 # =========================================================
 
-# Shared color scale for GO log2FC and gene log2FC
-# blue = down, white = 0, red = up
 log2fc_col_fun <- colorRamp2(
   c(-5, 0, 5),
   c("blue", "white", "red")
 )
 
+go_bar_col_fun <- colorRamp2(
+  c(GO_LOG2FE_THRESHOLD, max(GO_LOG2FE_THRESHOLD + 1, 8)),
+  c("orange", "green")
+)
+
 
 # =========================================================
-# LOAD FACET FILE
+# LOAD FACETS
 # =========================================================
 
 facet_df <- read_csv(facet_file, show_col_types = FALSE) %>%
@@ -82,17 +78,17 @@ facet_df <- read_csv(facet_file, show_col_types = FALSE) %>%
 
 
 # =========================================================
-# LOAD GENE COLOR FILE
+# LOAD GENE COLORS
 # =========================================================
 
 gene_colors_df <- read_tsv(gene_colors_file, show_col_types = FALSE) %>%
   select(
     gene_id = 1,
-    gene_group_color = 2
+    gene_color = 2
   ) %>%
   mutate(
     gene_id = as.character(gene_id),
-    gene_group_color = as.character(gene_group_color)
+    gene_color = as.character(gene_color)
   ) %>%
   distinct(gene_id, .keep_all = TRUE)
 
@@ -117,13 +113,8 @@ for (i in seq_len(nrow(datasets))) {
     next
   }
 
-  if (!file.exists(go_file)) {
-    message("Skipping ", comparison, " ", direction, ": GO file not found.")
-    next
-  }
-
-  if (!file.exists(gene_file)) {
-    message("Skipping ", comparison, " ", direction, ": gene file not found.")
+  if (!file.exists(go_file) || !file.exists(gene_file)) {
+    message("Skipping ", comparison, " ", direction, ": file not found.")
     next
   }
 
@@ -187,7 +178,7 @@ for (i in seq_len(nrow(datasets))) {
 
 
 # =========================================================
-# COMBINE TABLES
+# COMBINE DATA
 # =========================================================
 
 go_long <- bind_rows(go_long_list) %>%
@@ -197,9 +188,7 @@ go_long <- bind_rows(go_long_list) %>%
     .groups = "drop"
   ) %>%
   left_join(facet_df, by = "go_term") %>%
-  mutate(
-    facet = replace_na(facet, "Unannotated")
-  )
+  mutate(facet = replace_na(facet, "Unannotated"))
 
 gene_long <- bind_rows(gene_long_list) %>%
   group_by(gene_id) %>%
@@ -214,7 +203,7 @@ go_gene_long <- bind_rows(go_gene_list) %>%
 
 
 # =========================================================
-# BUILD MATRIX
+# BUILD GENE LOG2FC MATRIX
 # =========================================================
 
 merged <- go_gene_long %>%
@@ -273,10 +262,6 @@ row_metadata <- matrix_df %>%
 
 row_metadata <- row_metadata[rownames(mat), , drop = FALSE]
 
-go_mat <- matrix(row_metadata$go_log2FC, ncol = 1)
-rownames(go_mat) <- rownames(mat)
-colnames(go_mat) <- "GO log2FC"
-
 row_split <- factor(
   row_metadata$facet,
   levels = unique(row_metadata$facet)
@@ -285,53 +270,151 @@ row_split <- factor(
 
 # =========================================================
 # COLUMN METADATA
-# Cluster by gene group color first, then hierarchy
 # =========================================================
 
 col_metadata <- tibble(gene_id = colnames(mat)) %>%
   left_join(gene_colors_df, by = "gene_id") %>%
-  mutate(
-    gene_group_color = replace_na(gene_group_color, "#FFFFFF")
-  ) %>%
+  mutate(gene_color = replace_na(gene_color, "#FFFFFF")) %>%
   column_to_rownames("gene_id")
 
 col_metadata <- col_metadata[colnames(mat), , drop = FALSE]
 
 gene_group <- factor(
-  col_metadata$gene_group_color,
-  levels = unique(col_metadata$gene_group_color)
+  col_metadata$gene_color,
+  levels = unique(col_metadata$gene_color)
 )
 
-gene_group_colors <- setNames(
+gene_color_map <- setNames(
   levels(gene_group),
   levels(gene_group)
 )
 
-top_anno <- HeatmapAnnotation(
-  gene_group = gene_group,
-  col = list(gene_group = gene_group_colors),
+gene_color_strip <- HeatmapAnnotation(
+  gene_color = gene_group,
+  col = list(gene_color = gene_color_map),
+  show_annotation_name = FALSE,
   show_legend = FALSE,
-  show_annotation_name = FALSE
+  annotation_height = unit(3, "mm")
 )
 
 
 # =========================================================
-# MAKE HEATMAPS
+# HEATMAP COMPONENT 1:
+# GO NAMES AS ROW HEADERS
 # =========================================================
 
-go_heatmap <- Heatmap(
-  go_mat,
-  name = "log2FC",
-  col = log2fc_col_fun,
-  width = unit(8, "mm"),
+label_mat <- matrix(
+  "",
+  nrow = nrow(mat),
+  ncol = 1,
+  dimnames = list(rownames(mat), "GO term")
+)
+
+go_name_heatmap <- Heatmap(
+  label_mat,
+  name = "GO term",
+  col = c("" = "white"),
+  width = max_text_width(row_metadata$go_term, gp = gpar(fontsize = 7)) + unit(4, "mm"),
   cluster_rows = FALSE,
   cluster_columns = FALSE,
+  row_split = row_split,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  show_heatmap_legend = FALSE,
+  rect_gp = gpar(col = NA),
+  row_title_side = "left",
+  row_title_rot = 0,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(
+      row_metadata$go_term[i],
+      x = unit(1, "npc"),
+      y = y,
+      just = "right",
+      gp = gpar(fontsize = 7)
+    )
+  }
+)
+
+
+# =========================================================
+# HEATMAP COMPONENT 2:
+# GO LOG2FC BAR COLUMN
+# =========================================================
+
+go_bar_mat <- matrix(
+  row_metadata$go_log2FC,
+  ncol = 1,
+  dimnames = list(rownames(mat), "GO log2FC")
+)
+
+max_go_abs <- max(abs(go_bar_mat), na.rm = TRUE)
+
+go_bar_heatmap <- Heatmap(
+  go_bar_mat,
+  name = "GO log2FC",
+  col = log2fc_col_fun,
+  width = unit(35, "mm"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  row_split = row_split,
   show_row_names = FALSE,
   show_column_names = TRUE,
+  column_names_rot = 45,
+  rect_gp = gpar(col = "grey85"),
+  show_heatmap_legend = FALSE,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+
+    val <- go_bar_mat[i, j]
+    frac <- abs(val) / max_go_abs
+    frac <- max(min(frac, 1), 0)
+
+    bar_col <- go_bar_col_fun(abs(val))
+
+    grid.rect(
+      x = unit(0, "npc"),
+      y = y,
+      width = unit(frac, "npc"),
+      height = height * 0.75,
+      just = "left",
+      gp = gpar(fill = bar_col, col = NA)
+    )
+
+    grid.rect(
+      x = x,
+      y = y,
+      width = width,
+      height = height,
+      gp = gpar(fill = NA, col = "grey85", lwd = 0.5)
+    )
+  }
+)
+
+
+# =========================================================
+# HEATMAP COMPONENT 3:
+# GENE LOG2FC HEATMAP
+# =========================================================
+
+gene_heatmap <- Heatmap(
+  mat,
+  name = "log2FC",
+  col = log2fc_col_fun,
+  top_annotation = gene_color_strip,
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  cluster_column_slices = FALSE,
+  column_split = gene_group,
   row_split = row_split,
-  row_title_rot = 0,
-  row_title_side = "left",
-  column_title = "GO",
+  show_row_names = FALSE,
+  show_row_dend = FALSE,
+  show_column_dend = FALSE,
+  show_column_names = TRUE,
+  column_names_side = "top",
+  column_names_rot = 90,
+  column_names_gp = gpar(fontsize = 6),
+  rect_gp = gpar(col = "grey80", lwd = 0.4),
+  row_gap = unit(2, "mm"),
+  column_gap = unit(0.5, "mm"),
   heatmap_legend_param = list(
     title = "log2FC",
     at = c(-5, 0, 5),
@@ -339,49 +422,24 @@ go_heatmap <- Heatmap(
   )
 )
 
-gene_heatmap <- Heatmap(
-  mat,
-  name = "log2FC",
-  col = log2fc_col_fun,
-  top_annotation = top_anno,
-  cluster_rows = FALSE,
-  cluster_columns = TRUE,
-  cluster_column_slices = FALSE,
-  column_split = gene_group,
-  show_column_names = TRUE,
-  show_row_names = TRUE,
-  row_names_side = "left",
-  row_split = row_split,
-  row_title = NULL,
-  row_gap = unit(2, "mm"),
-  column_gap = unit(1, "mm"),
-  show_column_dend = FALSE,
-  show_row_dend = FALSE,
-  column_names_gp = gpar(fontsize = 6),
-  row_names_gp = gpar(fontsize = 7),
-  rect_gp = gpar(col = NA),
-  show_heatmap_legend = FALSE
-)
-
-combined_heatmap <- go_heatmap + gene_heatmap
-
 
 # =========================================================
-# SAVE PLOT
+# DRAW COMBINED HEATMAP
 # =========================================================
+
+combined_heatmap <- go_name_heatmap + go_bar_heatmap + gene_heatmap
 
 png(
-  file.path(output_dir, "combined_GO_gene_heatmap.png"),
-  width = max(2200, 25 * ncol(mat)),
-  height = max(1600, 25 * nrow(mat)),
+  file.path(output_dir, "combined_gprofiler_style_GO_gene_heatmap.png"),
+  width = max(2400, 24 * ncol(mat)),
+  height = max(1600, 24 * nrow(mat)),
   res = 200
 )
 
 draw(
   combined_heatmap,
   merge_legends = TRUE,
-  heatmap_legend_side = "right",
-  annotation_legend_side = "right"
+  heatmap_legend_side = "right"
 )
 
 dev.off()
@@ -395,4 +453,4 @@ write_csv(go_long, file.path(output_dir, "parsed_GO_terms_combined.csv"))
 write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_combined.csv"))
 write_csv(merged, file.path(output_dir, "GO_gene_combined_long.csv"))
 
-message("Done. Combined heatmap saved in: ", output_dir)
+message("Done. Heatmap saved in: ", output_dir)
