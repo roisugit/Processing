@@ -1,0 +1,457 @@
+# =========================================================
+# g:Profiler-style GO + gene log2FC heatmap
+# =========================================================
+
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(grid)
+
+
+# =========================================================
+# USER SETTINGS
+# =========================================================
+
+datasets <- tribble(
+  ~comparison,    ~direction, ~go_file,              ~gene_file,
+  "comparison_1", "up",       "comp1_up_GO.csv",     "comp1_up_genes.csv",
+  "comparison_1", "down",     "",                    "",
+  "comparison_2", "up",       "comp2_up_GO.csv",     "comp2_up_genes.csv",
+  "comparison_2", "down",     "comp2_down_GO.csv",   "comp2_down_genes.csv",
+  "comparison_3", "up",       "",                    "",
+  "comparison_3", "down",     "comp3_down_GO.csv",   "comp3_down_genes.csv"
+)
+
+facet_file <- "GO_facets.csv"
+gene_colors_file <- "gene_colors.tsv"
+
+output_dir <- "heatmap_outputs"
+dir.create(output_dir, showWarnings = FALSE)
+
+GO_LOG2FE_THRESHOLD <- 3
+SIGN_GO_BY_DIRECTION <- TRUE
+
+
+# =========================================================
+# COLUMN SETTINGS
+# =========================================================
+
+GO_TERM_COL <- 2
+GO_GENES_COL <- 11
+GO_LOG2FE_COL <- 12
+
+GENE_ID_COL <- 1
+GENE_LOG2FC_COL <- 2
+
+FACET_GO_TERM_COL <- 1
+FACET_GROUP_COL <- 2
+
+
+# =========================================================
+# COLORS
+# =========================================================
+
+log2fc_col_fun <- colorRamp2(
+  c(-5, 0, 5),
+  c("blue", "white", "red")
+)
+
+go_bar_col_fun <- colorRamp2(
+  c(GO_LOG2FE_THRESHOLD, max(GO_LOG2FE_THRESHOLD + 1, 8)),
+  c("orange", "green")
+)
+
+
+# =========================================================
+# LOAD FACETS
+# =========================================================
+
+facet_df <- read_csv(facet_file, show_col_types = FALSE) %>%
+  select(
+    go_term = all_of(FACET_GO_TERM_COL),
+    facet = all_of(FACET_GROUP_COL)
+  ) %>%
+  mutate(
+    go_term = as.character(go_term),
+    facet = as.character(facet)
+  )
+
+
+# =========================================================
+# LOAD GENE COLORS
+# =========================================================
+
+gene_colors_df <- read_tsv(gene_colors_file, show_col_types = FALSE) %>%
+  select(
+    gene_id = 1,
+    gene_color = 2
+  ) %>%
+  mutate(
+    gene_id = as.character(gene_id),
+    gene_color = as.character(gene_color)
+  ) %>%
+  distinct(gene_id, .keep_all = TRUE)
+
+
+# =========================================================
+# PARSE FILES
+# =========================================================
+
+go_long_list <- list()
+gene_long_list <- list()
+go_gene_list <- list()
+
+for (i in seq_len(nrow(datasets))) {
+
+  comparison <- datasets$comparison[i]
+  direction <- datasets$direction[i]
+  go_file <- datasets$go_file[i]
+  gene_file <- datasets$gene_file[i]
+
+  if (is.na(go_file) || is.na(gene_file) || go_file == "" || gene_file == "") {
+    message("Skipping ", comparison, " ", direction, ": missing file.")
+    next
+  }
+
+  if (!file.exists(go_file) || !file.exists(gene_file)) {
+    message("Skipping ", comparison, " ", direction, ": file not found.")
+    next
+  }
+
+  dataset_name <- paste(comparison, direction, sep = "_")
+  message("Loading ", dataset_name)
+
+  go_df <- read_csv(go_file, show_col_types = FALSE)
+  gene_df <- read_csv(gene_file, show_col_types = FALSE)
+
+  gene_long <- gene_df %>%
+    select(
+      gene_id = all_of(GENE_ID_COL),
+      gene_log2FC = all_of(GENE_LOG2FC_COL)
+    ) %>%
+    mutate(
+      gene_id = as.character(gene_id),
+      gene_log2FC = as.numeric(gene_log2FC)
+    )
+
+  gene_long_list[[dataset_name]] <- gene_long
+
+  go_long <- go_df %>%
+    transmute(
+      go_term = as.character(.data[[names(go_df)[GO_TERM_COL]]]),
+      gene_list = as.character(.data[[names(go_df)[GO_GENES_COL]]]),
+      go_log2FC = as.numeric(.data[[names(go_df)[GO_LOG2FE_COL]]])
+    ) %>%
+    mutate(
+      go_log2FC = ifelse(
+        SIGN_GO_BY_DIRECTION & direction == "down",
+        -abs(go_log2FC),
+        go_log2FC
+      ),
+      go_log2FC = ifelse(
+        SIGN_GO_BY_DIRECTION & direction == "up",
+        abs(go_log2FC),
+        go_log2FC
+      )
+    ) %>%
+    filter(
+      !is.na(go_log2FC),
+      is.finite(go_log2FC),
+      abs(go_log2FC) >= GO_LOG2FE_THRESHOLD
+    )
+
+  go_long_list[[dataset_name]] <- go_long %>%
+    select(-gene_list)
+
+  go_gene_links <- go_long %>%
+    separate_rows(gene_list, sep = ",") %>%
+    mutate(gene_id = str_trim(gene_list)) %>%
+    filter(
+      !is.na(gene_id),
+      gene_id != "",
+      tolower(gene_id) != "nan"
+    ) %>%
+    select(go_term, gene_id)
+
+  go_gene_list[[dataset_name]] <- go_gene_links
+}
+
+
+# =========================================================
+# COMBINE DATA
+# =========================================================
+
+go_long <- bind_rows(go_long_list) %>%
+  group_by(go_term) %>%
+  summarise(
+    go_log2FC = mean(go_log2FC, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(facet_df, by = "go_term") %>%
+  mutate(facet = replace_na(facet, "Unannotated"))
+
+gene_long <- bind_rows(gene_long_list) %>%
+  group_by(gene_id) %>%
+  summarise(
+    gene_log2FC = mean(gene_log2FC, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+go_gene_long <- bind_rows(go_gene_list) %>%
+  distinct() %>%
+  left_join(go_long, by = "go_term")
+
+
+# =========================================================
+# BUILD GENE LOG2FC MATRIX
+# =========================================================
+
+merged <- go_gene_long %>%
+  left_join(gene_long, by = "gene_id")
+
+matrix_df <- merged %>%
+  unite("row_name", facet, go_term, sep = " | ", remove = FALSE) %>%
+  select(row_name, facet, go_term, gene_id, gene_log2FC) %>%
+  group_by(row_name, facet, go_term, gene_id) %>%
+  summarise(
+    gene_log2FC = ifelse(
+      all(is.na(gene_log2FC)),
+      NA_real_,
+      mean(gene_log2FC, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = gene_id,
+    values_from = gene_log2FC
+  )
+
+mat <- matrix_df %>%
+  select(-facet, -go_term) %>%
+  column_to_rownames("row_name") %>%
+  as.matrix()
+
+mat[is.nan(mat)] <- NA
+mat[is.infinite(mat)] <- NA
+
+mat <- mat[
+  rowSums(!is.na(mat)) > 0,
+  colSums(!is.na(mat)) > 0,
+  drop = FALSE
+]
+
+mat[is.na(mat)] <- 0
+
+
+# =========================================================
+# ROW METADATA
+# =========================================================
+
+row_metadata <- matrix_df %>%
+  select(row_name, facet, go_term) %>%
+  distinct() %>%
+  left_join(
+    go_long %>%
+      unite("row_name", facet, go_term, sep = " | ", remove = FALSE) %>%
+      select(row_name, go_log2FC),
+    by = "row_name"
+  ) %>%
+  filter(row_name %in% rownames(mat)) %>%
+  distinct(row_name, .keep_all = TRUE) %>%
+  column_to_rownames("row_name")
+
+row_metadata <- row_metadata[rownames(mat), , drop = FALSE]
+
+row_split <- factor(
+  row_metadata$facet,
+  levels = unique(row_metadata$facet)
+)
+
+
+# =========================================================
+# COLUMN METADATA
+# =========================================================
+
+col_metadata <- tibble(gene_id = colnames(mat)) %>%
+  left_join(gene_colors_df, by = "gene_id") %>%
+  mutate(gene_color = replace_na(gene_color, "#FFFFFF")) %>%
+  column_to_rownames("gene_id")
+
+col_metadata <- col_metadata[colnames(mat), , drop = FALSE]
+
+gene_group <- factor(
+  col_metadata$gene_color,
+  levels = unique(col_metadata$gene_color)
+)
+
+gene_color_map <- setNames(
+  levels(gene_group),
+  levels(gene_group)
+)
+
+gene_color_strip <- HeatmapAnnotation(
+  gene_color = gene_group,
+  col = list(gene_color = gene_color_map),
+  show_annotation_name = FALSE,
+  show_legend = FALSE,
+  annotation_height = unit(3, "mm")
+)
+
+
+# =========================================================
+# HEATMAP COMPONENT 1:
+# GO NAMES AS ROW HEADERS
+# =========================================================
+
+label_mat <- matrix(
+  1,
+  nrow = nrow(mat),
+  ncol = 1,
+  dimnames = list(rownames(mat), "GO term")
+)
+
+go_name_heatmap <- Heatmap(
+  label_mat,
+  name = "GO term",
+  col = c("1" = "white"),
+  width = max_text_width(row_metadata$go_term, gp = gpar(fontsize = 7)) + unit(4, "mm"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  row_split = row_split,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  show_heatmap_legend = FALSE,
+  rect_gp = gpar(col = NA),
+  row_title_side = "left",
+  row_title_rot = 0,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(
+      row_metadata$go_term[i],
+      x = unit(1, "npc"),
+      y = y,
+      just = "right",
+      gp = gpar(fontsize = 7)
+    )
+  }
+)
+
+
+# =========================================================
+# HEATMAP COMPONENT 2:
+# GO LOG2FC BAR COLUMN
+# =========================================================
+
+go_bar_mat <- matrix(
+  rep(0, nrow(row_metadata)),
+  ncol = 1,
+  dimnames = list(rownames(mat), "GO log2FC")
+)
+
+max_go_abs <- max(abs(row_metadata$go_log2FC), na.rm = TRUE)
+
+go_bar_heatmap <- Heatmap(
+  go_bar_mat,
+  name = "GO log2FC",
+  col = c("0" = "white"),
+  width = unit(35, "mm"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  row_split = row_split,
+  show_row_names = FALSE,
+  show_column_names = TRUE,
+  column_names_rot = 45,
+  rect_gp = gpar(col = "grey85"),
+  show_heatmap_legend = FALSE,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+
+    val <- row_metadata$go_log2FC[i]
+
+    frac <- abs(val) / max_go_abs
+    frac <- max(min(frac, 1), 0)
+
+    bar_col <- go_bar_col_fun(abs(val))
+
+    grid.rect(
+      x = unit(0, "npc"),
+      y = y,
+      width = unit(frac, "npc"),
+      height = height * 0.75,
+      just = "left",
+      gp = gpar(fill = bar_col, col = NA)
+    )
+
+    grid.rect(
+      x = x,
+      y = y,
+      width = width,
+      height = height,
+      gp = gpar(fill = NA, col = "grey85", lwd = 0.5)
+    )
+  }
+)
+
+
+# =========================================================
+# HEATMAP COMPONENT 3:
+# GENE LOG2FC HEATMAP
+# =========================================================
+
+gene_heatmap <- Heatmap(
+  mat,
+  name = "log2FC",
+  col = log2fc_col_fun,
+  top_annotation = gene_color_strip,
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  cluster_column_slices = FALSE,
+  column_split = gene_group,
+  row_split = row_split,
+  show_row_names = FALSE,
+  show_row_dend = FALSE,
+  show_column_dend = FALSE,
+  show_column_names = TRUE,
+  column_names_side = "top",
+  column_names_rot = 90,
+  column_names_gp = gpar(fontsize = 6),
+  rect_gp = gpar(col = "grey80", lwd = 0.4),
+  row_gap = unit(2, "mm"),
+  column_gap = unit(0.5, "mm"),
+  heatmap_legend_param = list(
+    title = "log2FC",
+    at = c(-5, 0, 5),
+    labels = c("-5", "0", "5")
+  )
+)
+
+
+# =========================================================
+# DRAW COMBINED HEATMAP
+# =========================================================
+
+combined_heatmap <- go_name_heatmap + go_bar_heatmap + gene_heatmap
+
+png(
+  file.path(output_dir, "combined_gprofiler_style_GO_gene_heatmap.png"),
+  width = max(2400, 24 * ncol(mat)),
+  height = max(1600, 24 * nrow(mat)),
+  res = 200
+)
+
+draw(
+  combined_heatmap,
+  merge_legends = TRUE,
+  heatmap_legend_side = "right"
+)
+
+dev.off()
+
+
+# =========================================================
+# SAVE TABLES
+# =========================================================
+
+write_csv(go_long, file.path(output_dir, "parsed_GO_terms_combined.csv"))
+write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_combined.csv"))
+write_csv(merged, file.path(output_dir, "GO_gene_combined_long.csv"))
+
+message("Done. Heatmap saved in: ", output_dir)
