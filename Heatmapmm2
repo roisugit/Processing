@@ -1,0 +1,334 @@
+# =========================================================
+# GO term + gene log2FC heatmaps
+# =========================================================
+
+library(tidyverse)
+library(pheatmap)
+library(viridisLite)
+
+
+# =========================================================
+# USER SETTINGS
+# =========================================================
+
+datasets <- tribble(
+  ~comparison,      ~direction, ~go_file,              ~gene_file,
+  "comparison_1",   "up",       "comp1_up_GO.csv",     "comp1_up_genes.csv",
+  "comparison_1",   "down",     "",                    "",
+  "comparison_2",   "up",       "comp2_up_GO.csv",     "comp2_up_genes.csv",
+  "comparison_2",   "down",     "comp2_down_GO.csv",   "comp2_down_genes.csv",
+  "comparison_3",   "up",       "",                    "",
+  "comparison_3",   "down",     "comp3_down_GO.csv",   "comp3_down_genes.csv"
+)
+
+facet_file <- "GO_facets.csv"
+gene_colors_file <- "gene_colors.tsv"
+
+output_dir <- "heatmap_outputs"
+dir.create(output_dir, showWarnings = FALSE)
+
+# Only plot GO terms with log2 fold enrichment >= this value
+GO_LOG2FE_THRESHOLD <- 3
+
+
+# =========================================================
+# COLUMN SETTINGS
+# R uses 1-based indexing
+# =========================================================
+
+GO_TERM_COL <- 2
+GO_GENES_COL <- 11
+GO_LOG2FE_COL <- 12
+
+GENE_ID_COL <- 1
+GENE_LOG2FC_COL <- 2
+
+FACET_GO_TERM_COL <- 1
+FACET_GROUP_COL <- 2
+
+
+# =========================================================
+# LOAD FACET FILE
+# =========================================================
+
+facet_df <- read_csv(facet_file, show_col_types = FALSE) %>%
+  select(
+    go_term = all_of(FACET_GO_TERM_COL),
+    facet = all_of(FACET_GROUP_COL)
+  ) %>%
+  mutate(
+    go_term = as.character(go_term),
+    facet = as.character(facet)
+  )
+
+
+# =========================================================
+# LOAD GENE COLOR FILE
+# =========================================================
+
+gene_colors_df <- read_tsv(gene_colors_file, show_col_types = FALSE) %>%
+  select(
+    gene_id = 1,
+    gene_color = 2
+  ) %>%
+  mutate(
+    gene_id = as.character(gene_id),
+    gene_color = as.character(gene_color)
+  ) %>%
+  distinct(gene_id, .keep_all = TRUE)
+
+
+# =========================================================
+# PARSE FILES
+# =========================================================
+
+go_long_list <- list()
+gene_long_list <- list()
+go_gene_list <- list()
+
+for (i in seq_len(nrow(datasets))) {
+
+  comparison <- datasets$comparison[i]
+  direction <- datasets$direction[i]
+  go_file <- datasets$go_file[i]
+  gene_file <- datasets$gene_file[i]
+
+  if (is.na(go_file) || is.na(gene_file) || go_file == "" || gene_file == "") {
+    message("Skipping ", comparison, " ", direction, ": missing file.")
+    next
+  }
+
+  if (!file.exists(go_file)) {
+    message("Skipping ", comparison, " ", direction, ": GO file not found.")
+    next
+  }
+
+  if (!file.exists(gene_file)) {
+    message("Skipping ", comparison, " ", direction, ": gene file not found.")
+    next
+  }
+
+  dataset_name <- paste(comparison, direction, sep = "_")
+
+  message("Loading ", dataset_name)
+
+  go_df <- read_csv(go_file, show_col_types = FALSE)
+  gene_df <- read_csv(gene_file, show_col_types = FALSE)
+
+  gene_long <- gene_df %>%
+    select(
+      gene_id = all_of(GENE_ID_COL),
+      gene_log2FC = all_of(GENE_LOG2FC_COL)
+    ) %>%
+    mutate(
+      gene_id = as.character(gene_id),
+      gene_log2FC = as.numeric(gene_log2FC),
+      comparison = comparison,
+      direction = direction,
+      dataset = dataset_name
+    )
+
+  gene_long_list[[dataset_name]] <- gene_long
+
+  go_long <- go_df %>%
+    transmute(
+      go_term = as.character(.data[[names(go_df)[GO_TERM_COL]]]),
+      gene_list = as.character(.data[[names(go_df)[GO_GENES_COL]]]),
+      go_log2_fold_enrichment = as.numeric(.data[[names(go_df)[GO_LOG2FE_COL]]]),
+      comparison = comparison,
+      direction = direction,
+      dataset = dataset_name
+    ) %>%
+    filter(
+      !is.na(go_log2_fold_enrichment),
+      go_log2_fold_enrichment >= GO_LOG2FE_THRESHOLD
+    )
+
+  go_long_list[[dataset_name]] <- go_long %>%
+    select(-gene_list)
+
+  go_gene_links <- go_long %>%
+    separate_rows(gene_list, sep = ",") %>%
+    mutate(
+      gene_id = str_trim(gene_list)
+    ) %>%
+    filter(
+      !is.na(gene_id),
+      gene_id != "",
+      tolower(gene_id) != "nan"
+    ) %>%
+    select(
+      go_term,
+      gene_id,
+      comparison,
+      direction,
+      dataset
+    )
+
+  go_gene_list[[dataset_name]] <- go_gene_links
+}
+
+
+# =========================================================
+# COMBINE TABLES
+# =========================================================
+
+go_long <- bind_rows(go_long_list) %>%
+  left_join(facet_df, by = "go_term") %>%
+  mutate(
+    facet = replace_na(facet, "Unannotated")
+  )
+
+gene_long <- bind_rows(gene_long_list)
+
+go_gene_long <- bind_rows(go_gene_list) %>%
+  left_join(facet_df, by = "go_term") %>%
+  mutate(
+    facet = replace_na(facet, "Unannotated")
+  )
+
+
+# =========================================================
+# GO TERM HEATMAP
+# =========================================================
+
+go_matrix_df <- go_long %>%
+  unite("row_name", facet, go_term, sep = " | ", remove = FALSE) %>%
+  select(row_name, dataset, go_log2_fold_enrichment) %>%
+  distinct() %>%
+  pivot_wider(
+    names_from = dataset,
+    values_from = go_log2_fold_enrichment
+  )
+
+go_matrix <- go_matrix_df %>%
+  column_to_rownames("row_name") %>%
+  as.matrix()
+
+if (nrow(go_matrix) > 0 && ncol(go_matrix) > 0) {
+
+  png(
+    file.path(output_dir, "GO_term_log2_fold_enrichment_heatmap.png"),
+    width = 1800,
+    height = max(1200, 25 * nrow(go_matrix)),
+    res = 200
+  )
+
+  pheatmap(
+    go_matrix,
+    color = viridis(100),
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    main = paste0(
+      "GO term log2 fold enrichment, threshold >= ",
+      GO_LOG2FE_THRESHOLD
+    ),
+    na_col = "white",
+    fontsize_row = 7
+  )
+
+  dev.off()
+
+} else {
+  message("Skipping GO enrichment heatmap: no GO terms passed threshold.")
+}
+
+
+# =========================================================
+# GENE LOG2FC HEATMAPS
+# One heatmap per dataset
+# =========================================================
+
+merged <- go_gene_long %>%
+  left_join(
+    gene_long,
+    by = c("gene_id", "comparison", "direction", "dataset")
+  )
+
+for (dataset_name in unique(merged$dataset)) {
+
+  sub <- merged %>%
+    filter(dataset == dataset_name)
+
+  matrix_df <- sub %>%
+    unite("row_name", facet, go_term, sep = " | ", remove = FALSE) %>%
+    select(row_name, gene_id, gene_log2FC) %>%
+    group_by(row_name, gene_id) %>%
+    summarise(
+      gene_log2FC = mean(gene_log2FC, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from = gene_id,
+      values_from = gene_log2FC
+    )
+
+  matrix <- matrix_df %>%
+    column_to_rownames("row_name") %>%
+    as.matrix()
+
+  matrix <- matrix[
+    rowSums(!is.na(matrix)) > 0,
+    colSums(!is.na(matrix)) > 0,
+    drop = FALSE
+  ]
+
+  if (nrow(matrix) == 0 || ncol(matrix) == 0) {
+    message("Skipping ", dataset_name, ": empty matrix.")
+    next
+  }
+
+  genes_in_matrix <- colnames(matrix)
+
+  annotation_col <- tibble(gene_id = genes_in_matrix) %>%
+    left_join(gene_colors_df, by = "gene_id") %>%
+    mutate(
+      gene_color = replace_na(gene_color, "#FFFFFF")
+    ) %>%
+    column_to_rownames("gene_id")
+
+  annotation_colors <- list(
+    gene_color = setNames(
+      unique(annotation_col$gene_color),
+      unique(annotation_col$gene_color)
+    )
+  )
+
+  png(
+    file.path(output_dir, paste0(dataset_name, "_gene_log2FC_heatmap.png")),
+    width = max(1800, 25 * ncol(matrix)),
+    height = max(1200, 25 * nrow(matrix)),
+    res = 200
+  )
+
+  pheatmap(
+    matrix,
+    color = colorRampPalette(c("blue", "white", "red"))(100),
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    main = paste0(
+      "Gene log2FC: ",
+      dataset_name,
+      ", GO threshold >= ",
+      GO_LOG2FE_THRESHOLD
+    ),
+    na_col = "white",
+    fontsize_row = 7,
+    fontsize_col = 6,
+    annotation_col = annotation_col,
+    annotation_colors = annotation_colors
+  )
+
+  dev.off()
+}
+
+
+# =========================================================
+# SAVE PARSED TABLES
+# =========================================================
+
+write_csv(go_long, file.path(output_dir, "parsed_GO_terms_long.csv"))
+write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_long.csv"))
+write_csv(merged, file.path(output_dir, "GO_gene_gene_log2FC_long.csv"))
+
+message("Done. Outputs saved in: ", output_dir)
