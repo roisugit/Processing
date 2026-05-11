@@ -27,7 +27,6 @@ gene_colors_file <- "gene_colors.tsv"
 output_dir <- "heatmap_outputs"
 dir.create(output_dir, showWarnings = FALSE)
 
-# Only plot GO terms with log2 fold enrichment >= this value
 GO_LOG2FE_THRESHOLD <- 3
 
 
@@ -45,6 +44,18 @@ GENE_LOG2FC_COL <- 2
 
 FACET_GO_TERM_COL <- 1
 FACET_GROUP_COL <- 2
+
+
+# =========================================================
+# HELPER FUNCTION
+# =========================================================
+
+clean_heatmap_matrix <- function(mat, fill_value = 0) {
+  mat[is.nan(mat)] <- NA
+  mat[is.infinite(mat)] <- NA
+  mat[is.na(mat)] <- fill_value
+  return(mat)
+}
 
 
 # =========================================================
@@ -141,6 +152,7 @@ for (i in seq_len(nrow(datasets))) {
     ) %>%
     filter(
       !is.na(go_log2_fold_enrichment),
+      is.finite(go_log2_fold_enrichment),
       go_log2_fold_enrichment >= GO_LOG2FE_THRESHOLD
     )
 
@@ -205,7 +217,9 @@ go_matrix <- go_matrix_df %>%
   column_to_rownames("row_name") %>%
   as.matrix()
 
-if (nrow(go_matrix) > 0 && ncol(go_matrix) > 0) {
+go_matrix <- clean_heatmap_matrix(go_matrix, fill_value = 0)
+
+if (nrow(go_matrix) > 1 && ncol(go_matrix) > 1) {
 
   png(
     file.path(output_dir, "GO_term_log2_fold_enrichment_heatmap.png"),
@@ -219,6 +233,30 @@ if (nrow(go_matrix) > 0 && ncol(go_matrix) > 0) {
     color = viridis(100),
     cluster_rows = TRUE,
     cluster_cols = TRUE,
+    main = paste0(
+      "GO term log2 fold enrichment, threshold >= ",
+      GO_LOG2FE_THRESHOLD
+    ),
+    na_col = "white",
+    fontsize_row = 7
+  )
+
+  dev.off()
+
+} else if (nrow(go_matrix) > 0 && ncol(go_matrix) > 0) {
+
+  png(
+    file.path(output_dir, "GO_term_log2_fold_enrichment_heatmap.png"),
+    width = 1800,
+    height = max(1200, 25 * nrow(go_matrix)),
+    res = 200
+  )
+
+  pheatmap(
+    go_matrix,
+    color = viridis(100),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
     main = paste0(
       "GO term log2 fold enrichment, threshold >= ",
       GO_LOG2FE_THRESHOLD
@@ -255,7 +293,11 @@ for (dataset_name in unique(merged$dataset)) {
     select(row_name, gene_id, gene_log2FC) %>%
     group_by(row_name, gene_id) %>%
     summarise(
-      gene_log2FC = mean(gene_log2FC, na.rm = TRUE),
+      gene_log2FC = ifelse(
+        all(is.na(gene_log2FC)),
+        NA_real_,
+        mean(gene_log2FC, na.rm = TRUE)
+      ),
       .groups = "drop"
     ) %>%
     pivot_wider(
@@ -277,6 +319,8 @@ for (dataset_name in unique(merged$dataset)) {
     message("Skipping ", dataset_name, ": empty matrix.")
     next
   }
+
+  matrix <- clean_heatmap_matrix(matrix, fill_value = 0)
 
   genes_in_matrix <- colnames(matrix)
 
@@ -304,8 +348,8 @@ for (dataset_name in unique(merged$dataset)) {
   pheatmap(
     matrix,
     color = colorRampPalette(c("blue", "white", "red"))(100),
-    cluster_rows = TRUE,
-    cluster_cols = TRUE,
+    cluster_rows = nrow(matrix) > 1,
+    cluster_cols = ncol(matrix) > 1,
     main = paste0(
       "Gene log2FC: ",
       dataset_name,
