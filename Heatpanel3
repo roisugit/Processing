@@ -1,6 +1,7 @@
 # =========================================================
 # Gene-only log2FC heatmaps
 # Standalone horizontal panels with gene names per panel
+# No dendrograms, one legend per plot, fixed cell height
 # =========================================================
 
 library(tidyverse)
@@ -39,6 +40,9 @@ TOP_N <- 50
 
 GENE_ID_COL <- 1
 GENE_LOG2FC_COL <- 2
+
+CELL_HEIGHT_MM <- 3
+CELL_WIDTH_MM <- 4
 
 log2fc_col_fun <- colorRamp2(
   c(-5, 0, 5),
@@ -121,11 +125,12 @@ draw_standalone_horizontal_panels <- function(
   }
 
   n_panels <- length(panel_df_list)
+  max_rows <- max(sapply(panel_df_list, nrow))
 
   png(
     file,
-    width = max(1800, 520 * n_panels),
-    height = 1400,
+    width = max(1800, 470 * n_panels + 180),
+    height = max(800, 45 * max_rows),
     res = 200
   )
 
@@ -135,8 +140,8 @@ draw_standalone_horizontal_panels <- function(
     viewport(
       layout = grid.layout(
         nrow = 1,
-        ncol = n_panels,
-        widths = unit(rep(1, n_panels), "null")
+        ncol = n_panels + 1,
+        widths = unit(c(rep(1, n_panels), 0.35), "null")
       )
     )
   )
@@ -176,7 +181,9 @@ draw_standalone_horizontal_panels <- function(
     pushViewport(
       viewport(
         layout.pos.row = 1,
-        layout.pos.col = i
+        layout.pos.col = i,
+        y = unit(1, "npc"),
+        just = "top"
       )
     )
 
@@ -188,35 +195,53 @@ draw_standalone_horizontal_panels <- function(
         top_annotation = top_anno,
         column_title = panel_title,
         column_title_gp = gpar(fontsize = 8, fontface = "bold"),
-        cluster_rows = TRUE,
+
+        cluster_rows = FALSE,
         cluster_columns = FALSE,
+        show_row_dend = FALSE,
+        show_column_dend = FALSE,
+
         show_row_names = TRUE,
         row_names_side = "left",
         row_names_gp = gpar(fontsize = 5),
         show_column_names = FALSE,
+
         rect_gp = gpar(col = "grey80", lwd = 0.25),
-        width = unit(4, "mm"),
-        heatmap_legend_param = list(
-          title = "log2FC",
-          at = c(-5, 0, 5),
-          labels = c("-5", "0", "5")
-        )
+
+        width = unit(CELL_WIDTH_MM, "mm"),
+        height = unit(nrow(mat) * CELL_HEIGHT_MM, "mm"),
+
+        show_heatmap_legend = FALSE
       ),
-      newpage = FALSE,
-      heatmap_legend_side = "right"
+      newpage = FALSE
     )
 
     popViewport()
   }
 
+  pushViewport(
+    viewport(
+      layout.pos.row = 1,
+      layout.pos.col = n_panels + 1
+    )
+  )
+
+  lgd <- Legend(
+    title = "log2FC",
+    col_fun = log2fc_col_fun,
+    at = c(-5, 0, 5),
+    labels = c("-5", "0", "5")
+  )
+
+  draw(lgd)
+
+  popViewport()
   popViewport()
   dev.off()
 }
 
 # =========================================================
 # 1. COMPARISON HEATMAP
-#    Each comparison/direction is its own standalone panel.
-#    Each panel has its own gene list.
 # =========================================================
 
 comparison_panel_list <- list()
@@ -239,8 +264,6 @@ draw_standalone_horizontal_panels(
 
 # =========================================================
 # 2. COLOR HEATMAP
-#    Each gene color is its own standalone panel.
-#    Each panel has its own gene list.
 # =========================================================
 
 gene_color_summary <- gene_long_with_color %>%
@@ -274,8 +297,6 @@ draw_standalone_horizontal_panels(
 
 # =========================================================
 # 3. BASIC HEATMAP
-#    No standalone panels.
-#    All selected genes, comparison columns retained.
 # =========================================================
 
 basic_genes <- union(
@@ -302,7 +323,7 @@ basic_mat[is.na(basic_mat)] <- 0
 png(
   file.path(output_dir, "gene_heatmap_basic_all_selected_genes.png"),
   width = max(1400, 140 * ncol(basic_mat)),
-  height = max(1400, 14 * nrow(basic_mat)),
+  height = max(800, 45 * nrow(basic_mat)),
   res = 200
 )
 
@@ -311,12 +332,21 @@ draw(
     basic_mat,
     name = "log2FC",
     col = log2fc_col_fun,
-    cluster_rows = TRUE,
+
+    cluster_rows = FALSE,
     cluster_columns = FALSE,
+    show_row_dend = FALSE,
+    show_column_dend = FALSE,
+
     show_row_names = TRUE,
     row_names_gp = gpar(fontsize = 5),
     column_names_rot = 45,
+
     rect_gp = gpar(col = "grey80", lwd = 0.3),
+
+    width = unit(ncol(basic_mat) * CELL_WIDTH_MM, "mm"),
+    height = unit(nrow(basic_mat) * CELL_HEIGHT_MM, "mm"),
+
     heatmap_legend_param = list(
       title = "log2FC",
       at = c(-5, 0, 5),
