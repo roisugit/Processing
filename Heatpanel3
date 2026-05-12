@@ -109,19 +109,16 @@ gene_long_with_color <- gene_long %>%
   mutate(gene_color = replace_na(gene_color, "#FFFFFF"))
 
 # =========================================================
-# HELPER: PACKED GG HEATMAP PANELS
+# HELPER: PACKED GGPLOT HEATMAP PANELS
 # =========================================================
-
-safe_alpha <- function(x, alpha_value = 0.18) {
-  tryCatch(scales::alpha(x, alpha_value), error = function(e) "#FFFFFF")
-}
 
 draw_packed_panel_heatmap <- function(
     panel_df_list,
     value_col,
     file,
     panel_titles = NULL,
-    panel_backgrounds = NULL
+    panel_border_colors = NULL,
+    show_panel_titles = TRUE
 ) {
 
   panel_df_list <- panel_df_list[sapply(panel_df_list, nrow) > 0]
@@ -137,17 +134,17 @@ draw_packed_panel_heatmap <- function(
     names(panel_df_list),
     function(df, panel_name) {
 
+      panel_title <- panel_name
+
+      if (!is.null(panel_titles) && panel_name %in% names(panel_titles)) {
+        panel_title <- panel_titles[[panel_name]]
+      }
+
       df %>%
-        mutate(
-          panel = panel_name,
-          panel_title = ifelse(
-            !is.null(panel_titles) && panel_name %in% names(panel_titles),
-            panel_titles[[panel_name]],
-            panel_name
-          )
-        ) %>%
         arrange(desc(abs(.data[[value_col]]))) %>%
         mutate(
+          panel = panel_name,
+          panel_title = panel_title,
           rank_in_panel = row_number(),
           y = max_rows - rank_in_panel + 1,
           panel_index = match(panel_name, names(panel_df_list)),
@@ -162,27 +159,32 @@ draw_packed_panel_heatmap <- function(
     distinct(panel, panel_title, panel_index, x_tile) %>%
     mutate(y = max_rows + 1.4)
 
-  bg_df <- title_df %>%
+  border_df <- title_df %>%
     mutate(
-      bg_color = ifelse(
-        !is.null(panel_backgrounds) & panel %in% names(panel_backgrounds),
-        unlist(panel_backgrounds[panel]),
+      border_color = ifelse(
+        !is.null(panel_border_colors) & panel %in% names(panel_border_colors),
+        unlist(panel_border_colors[panel]),
         NA_character_
       ),
-      bg_color = map_chr(bg_color, safe_alpha),
       xmin = x_tile - 0.95,
       xmax = x_tile + 0.45,
       ymin = 0.25,
       ymax = max_rows + 1.75
     ) %>%
-    filter(!is.na(bg_color))
+    filter(!is.na(border_color))
 
   p <- ggplot() +
     geom_rect(
-      data = bg_df,
-      aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
-      fill = bg_df$bg_color,
-      color = NA
+      data = border_df,
+      aes(
+        xmin = xmin,
+        xmax = xmax,
+        ymin = ymin,
+        ymax = ymax
+      ),
+      fill = NA,
+      color = border_df$border_color,
+      linewidth = 1.5
     ) +
     geom_tile(
       data = plot_df,
@@ -198,21 +200,13 @@ draw_packed_panel_heatmap <- function(
       hjust = 1,
       size = 1.8
     ) +
-    geom_text(
-      data = title_df,
-      aes(x = x_tile - 0.25, y = y, label = panel_title),
-      fontface = "bold",
-      size = 2.6,
-      angle = 45,
-      hjust = 0
-    ) +
     scale_fill_gradient2(
       low = "blue",
       mid = "white",
       high = "red",
       midpoint = 0,
       limits = c(-5, 5),
-      oob = squish,
+      oob = scales::squish,
       name = "log2FC"
     ) +
     scale_y_continuous(
@@ -231,6 +225,18 @@ draw_packed_panel_heatmap <- function(
       panel.spacing = unit(0, "pt")
     )
 
+  if (show_panel_titles) {
+    p <- p +
+      geom_text(
+        data = title_df,
+        aes(x = x_tile, y = y, label = panel_title),
+        fontface = "bold",
+        size = 2.6,
+        angle = 0,
+        hjust = 0.5
+      )
+  }
+
   ggsave(
     filename = file,
     plot = p,
@@ -243,6 +249,7 @@ draw_packed_panel_heatmap <- function(
 
 # =========================================================
 # 1. COMPARISON HEATMAP
+#    Comparison names are not tilted.
 # =========================================================
 
 comparison_panel_list <- list()
@@ -261,11 +268,14 @@ draw_packed_panel_heatmap(
   value_col = "log2FC",
   file = file.path(output_dir, "gene_heatmap_horizontal_standalone_panels_by_comparison.png"),
   panel_titles = comparison_labels,
-  panel_backgrounds = NULL
+  panel_border_colors = NULL,
+  show_panel_titles = TRUE
 )
 
 # =========================================================
 # 2. COLOR HEATMAP
+#    No color labels printed.
+#    Exact gene color is used as thick panel border.
 # =========================================================
 
 gene_color_summary <- gene_long_with_color %>%
@@ -277,7 +287,7 @@ gene_color_summary <- gene_long_with_color %>%
   )
 
 color_panel_list <- list()
-color_panel_backgrounds <- list()
+color_panel_borders <- list()
 
 for (this_color in unique(gene_color_summary$gene_color)) {
 
@@ -286,7 +296,7 @@ for (this_color in unique(gene_color_summary$gene_color)) {
     slice_max(order_by = max_abs_log2FC, n = TOP_N, with_ties = FALSE) %>%
     select(gene_id, mean_log2FC)
 
-  color_panel_backgrounds[[this_color]] <- this_color
+  color_panel_borders[[this_color]] <- this_color
 }
 
 draw_packed_panel_heatmap(
@@ -294,7 +304,8 @@ draw_packed_panel_heatmap(
   value_col = "mean_log2FC",
   file = file.path(output_dir, "gene_heatmap_horizontal_standalone_panels_by_color.png"),
   panel_titles = NULL,
-  panel_backgrounds = color_panel_backgrounds
+  panel_border_colors = color_panel_borders,
+  show_panel_titles = FALSE
 )
 
 # =========================================================
@@ -334,16 +345,21 @@ draw(
     basic_mat,
     name = "log2FC",
     col = log2fc_col_fun,
+
     cluster_rows = FALSE,
     cluster_columns = FALSE,
     show_row_dend = FALSE,
     show_column_dend = FALSE,
+
     show_row_names = TRUE,
     row_names_gp = gpar(fontsize = 5),
     column_names_rot = 45,
+
     rect_gp = gpar(col = "grey80", lwd = 0.3),
+
     width = unit(ncol(basic_mat) * 4, "mm"),
     height = unit(nrow(basic_mat) * 3, "mm"),
+
     heatmap_legend_param = list(
       title = "log2FC",
       at = c(-5, 0, 5),
