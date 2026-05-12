@@ -1,0 +1,30 @@
+get_row_order <- function(genes, include_color = TRUE) {
+
+  order_df <- heatmap_source_with_color %>%
+    filter(gene_id %in% genes) %>%
+    group_by(gene_id, gene_color) %>%
+    summarise(
+      max_abs_log2FC = max(abs(log2FC), na.rm = TRUE),
+      mean_log2FC = mean(log2FC, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  if (include_color) {
+    order_df %>%
+      arrange(
+        gene_color,
+        desc(max_abs_log2FC),
+        desc(mean_log2FC),
+        gene_id
+      ) %>%
+      pull(gene_id)
+  } else {
+    order_df %>%
+      arrange(
+        desc(max_abs_log2FC),
+        desc(mean_log2FC),
+        gene_id
+      ) %>%
+      pull(gene_id)
+  }
+}
