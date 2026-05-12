@@ -1,0 +1,278 @@
+# =========================================================
+# Gene-only log2FC heatmaps
+# =========================================================
+
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(grid)
+
+# =========================================================
+# USER SETTINGS
+# =========================================================
+
+datasets <- tribble(
+  ~comparison,    ~direction, ~gene_file,
+  "comparison_1", "up",       "comp1_up_genes.csv",
+  "comparison_1", "down",     "",
+  "comparison_2", "up",       "comp2_up_genes.csv",
+  "comparison_2", "down",     "comp2_down_genes.csv",
+  "comparison_3", "up",       "",
+  "comparison_3", "down",     "comp3_down_genes.csv"
+)
+
+gene_colors_file <- "gene_colors.tsv"
+
+output_dir <- "heatmap_outputs"
+dir.create(output_dir, showWarnings = FALSE)
+
+TOP_N <- 50
+
+GENE_ID_COL <- 1
+GENE_LOG2FC_COL <- 2
+
+log2fc_col_fun <- colorRamp2(
+  c(-5, 0, 5),
+  c("blue", "white", "red")
+)
+
+# =========================================================
+# LOAD GENE COLORS
+# =========================================================
+
+gene_colors_df <- read_tsv(gene_colors_file, show_col_types = FALSE) %>%
+  select(
+    gene_id = 1,
+    gene_color = 2
+  ) %>%
+  mutate(
+    gene_id = as.character(gene_id),
+    gene_color = as.character(gene_color)
+  ) %>%
+  distinct(gene_id, .keep_all = TRUE)
+
+# =========================================================
+# LOAD GENE FILES
+# =========================================================
+
+gene_long_list <- list()
+
+for (i in seq_len(nrow(datasets))) {
+
+  comparison <- datasets$comparison[i]
+  direction <- datasets$direction[i]
+  gene_file <- datasets$gene_file[i]
+
+  dataset_name <- paste(comparison, direction, sep = "_")
+
+  if (is.na(gene_file) || gene_file == "") {
+    message("Skipping ", dataset_name, ": missing file.")
+    next
+  }
+
+  if (!file.exists(gene_file)) {
+    message("Skipping ", dataset_name, ": file not found.")
+    next
+  }
+
+  message("Loading ", dataset_name)
+
+  gene_df <- read_csv(gene_file, show_col_types = FALSE)
+
+  gene_long_list[[dataset_name]] <- gene_df %>%
+    select(
+      gene_id = all_of(GENE_ID_COL),
+      log2FC = all_of(GENE_LOG2FC_COL)
+    ) %>%
+    mutate(
+      gene_id = as.character(gene_id),
+      log2FC = as.numeric(log2FC),
+      comparison = comparison,
+      direction = direction,
+      dataset = dataset_name
+    ) %>%
+    filter(!is.na(gene_id), gene_id != "", is.finite(log2FC))
+}
+
+gene_long <- bind_rows(gene_long_list) %>%
+  left_join(gene_colors_df, by = "gene_id") %>%
+  mutate(gene_color = replace_na(gene_color, "Unannotated"))
+
+# =========================================================
+# MATRIX HELPER
+# =========================================================
+
+make_gene_matrix <- function(gene_ids, gene_long) {
+
+  gene_long %>%
+    filter(gene_id %in% gene_ids) %>%
+    group_by(gene_id, dataset) %>%
+    summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(
+      names_from = dataset,
+      values_from = log2FC
+    ) %>%
+    column_to_rownames("gene_id") %>%
+    as.matrix()
+}
+
+clean_matrix <- function(mat) {
+  mat[is.nan(mat)] <- NA
+  mat[is.infinite(mat)] <- NA
+
+  mat <- mat[
+    rowSums(!is.na(mat)) > 0,
+    colSums(!is.na(mat)) > 0,
+    drop = FALSE
+  ]
+
+  mat[is.na(mat)] <- 0
+  mat
+}
+
+draw_gene_heatmap <- function(
+  mat,
+  file,
+  row_split = NULL,
+  title = NULL,
+  cluster_rows = TRUE
+) {
+
+  png(
+    file,
+    width = max(1600, 120 * ncol(mat)),
+    height = max(1400, 18 * nrow(mat)),
+    res = 200
+  )
+
+  ht <- Heatmap(
+    mat,
+    name = "log2FC",
+    col = log2fc_col_fun,
+    row_split = row_split,
+    cluster_rows = cluster_rows,
+    cluster_columns = FALSE,
+    cluster_row_slices = FALSE,
+    show_row_names = TRUE,
+    row_names_gp = gpar(fontsize = 6),
+    show_column_names = TRUE,
+    column_names_rot = 45,
+    column_names_gp = gpar(fontsize = 8),
+    row_gap = unit(2, "mm"),
+    rect_gp = gpar(col = "grey80", lwd = 0.3),
+    column_title = title,
+    heatmap_legend_param = list(
+      title = "log2FC",
+      at = c(-5, 0, 5),
+      labels = c("-5", "0", "5")
+    )
+  )
+
+  draw(ht, heatmap_legend_side = "right")
+  dev.off()
+}
+
+# =========================================================
+# 1. PANELED BY COMPARISON/DIRECTION
+#    6 possible panels, top 50 genes per comparison_direction
+# =========================================================
+
+top_by_dataset <- gene_long %>%
+  group_by(dataset) %>%
+  slice_max(order_by = abs(log2FC), n = TOP_N, with_ties = FALSE) %>%
+  ungroup()
+
+genes_dataset <- unique(top_by_dataset$gene_id)
+
+mat_dataset <- make_gene_matrix(genes_dataset, gene_long) %>%
+  clean_matrix()
+
+row_dataset_split <- top_by_dataset %>%
+  group_by(gene_id) %>%
+  slice_max(order_by = abs(log2FC), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(gene_id, dataset) %>%
+  distinct() %>%
+  right_join(tibble(gene_id = rownames(mat_dataset)), by = "gene_id") %>%
+  mutate(dataset = replace_na(dataset, "Other")) %>%
+  column_to_rownames("gene_id")
+
+row_dataset_split <- factor(
+  row_dataset_split[rownames(mat_dataset), "dataset"],
+  levels = datasets %>%
+    mutate(dataset = paste(comparison, direction, sep = "_")) %>%
+    pull(dataset)
+)
+
+draw_gene_heatmap(
+  mat = mat_dataset,
+  file = file.path(output_dir, "gene_heatmap_paneled_by_comparison_direction.png"),
+  row_split = row_dataset_split,
+  title = "Top 50 genes per comparison/direction",
+  cluster_rows = TRUE
+)
+
+# =========================================================
+# 2. PANELED BY GENE COLOR
+#    11 color panels, top 50 genes per color
+# =========================================================
+
+top_by_color <- gene_long %>%
+  group_by(gene_color, gene_id) %>%
+  summarise(max_abs_log2FC = max(abs(log2FC), na.rm = TRUE), .groups = "drop") %>%
+  group_by(gene_color) %>%
+  slice_max(order_by = max_abs_log2FC, n = TOP_N, with_ties = FALSE) %>%
+  ungroup()
+
+genes_color <- unique(top_by_color$gene_id)
+
+mat_color <- make_gene_matrix(genes_color, gene_long) %>%
+  clean_matrix()
+
+row_color_split <- gene_long %>%
+  select(gene_id, gene_color) %>%
+  distinct(gene_id, .keep_all = TRUE) %>%
+  right_join(tibble(gene_id = rownames(mat_color)), by = "gene_id") %>%
+  mutate(gene_color = replace_na(gene_color, "Unannotated")) %>%
+  column_to_rownames("gene_id")
+
+row_color_split <- factor(
+  row_color_split[rownames(mat_color), "gene_color"],
+  levels = unique(gene_long$gene_color)
+)
+
+draw_gene_heatmap(
+  mat = mat_color,
+  file = file.path(output_dir, "gene_heatmap_paneled_by_gene_color.png"),
+  row_split = row_color_split,
+  title = "Top 50 genes per gene color",
+  cluster_rows = TRUE
+)
+
+# =========================================================
+# 3. BASIC HEATMAP
+#    all selected genes, no row panels
+# =========================================================
+
+genes_basic <- union(genes_dataset, genes_color)
+
+mat_basic <- make_gene_matrix(genes_basic, gene_long) %>%
+  clean_matrix()
+
+draw_gene_heatmap(
+  mat = mat_basic,
+  file = file.path(output_dir, "gene_heatmap_basic_all_selected_genes.png"),
+  row_split = NULL,
+  title = "Basic gene log2FC heatmap",
+  cluster_rows = TRUE
+)
+
+# =========================================================
+# SAVE TABLES
+# =========================================================
+
+write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_long.csv"))
+write_csv(top_by_dataset, file.path(output_dir, "top50_genes_per_comparison_direction.csv"))
+write_csv(top_by_color, file.path(output_dir, "top50_genes_per_gene_color.csv"))
+
+message("Done. Heatmaps saved in: ", output_dir)
