@@ -1,0 +1,145 @@
+# =========================================================
+# BUILD SINGLE FACETED GO SUMMARY PLOT
+# =========================================================
+
+library(ggtext)
+
+plot_df <- go_gene_long %>%
+  left_join(gene_long, by = "gene_id") %>%
+  filter(!is.na(go_term), !is.na(gene_id)) %>%
+  group_by(facet, go_term) %>%
+  mutate(gene_count = n_distinct(gene_id)) %>%
+  arrange(desc(gene_log2FC), .by_group = TRUE) %>%
+  slice_head(n = 5) %>%
+  ungroup()
+
+gene_uniqueness <- go_gene_long %>%
+  distinct(go_term, gene_id) %>%
+  count(gene_id, name = "go_occurrences")
+
+top_gene_labels <- plot_df %>%
+  left_join(gene_uniqueness, by = "gene_id") %>%
+  mutate(
+    gene_label = ifelse(
+      go_occurrences == 1,
+      paste0("<b><span style='color:black'>", gene_id, "</span></b>"),
+      paste0("<span style='color:#BDBDBD'>", gene_id, "</span>")
+    )
+  ) %>%
+  group_by(facet, go_term) %>%
+  summarise(
+    top_genes = paste(gene_label, collapse = ", "),
+    gene_count = first(gene_count),
+    .groups = "drop"
+  )
+
+plot_data <- go_long %>%
+  left_join(top_gene_labels, by = c("facet", "go_term")) %>%
+  mutate(
+    facet = replace_na(facet, "Unannotated"),
+    top_genes = replace_na(top_genes, ""),
+    gene_count = replace_na(gene_count, 0),
+    go_term = factor(go_term, levels = rev(unique(go_term[order(facet, go_log2FC)]))),
+    bar_start = 1.35,
+    bar_end = 1.35 + abs(go_log2FC) / max(abs(go_log2FC), na.rm = TRUE)
+  )
+
+single_plot <- ggplot(plot_data, aes(y = go_term)) +
+
+  # column 1: GO terms
+  geom_text(
+    aes(x = 1, label = go_term),
+    hjust = 1,
+    size = 2.6
+  ) +
+
+  # column 2: horizontal GO log2FC bars
+  geom_segment(
+    aes(
+      x = bar_start,
+      xend = bar_end,
+      yend = go_term,
+      color = abs(go_log2FC)
+    ),
+    linewidth = 5,
+    lineend = "butt"
+  ) +
+
+  # column 3: dot plot for number of genes
+  geom_point(
+    aes(x = 2.65, size = gene_count),
+    color = "black"
+  ) +
+
+  # column 4: top 5 genes, styled by uniqueness
+  ggtext::geom_richtext(
+    aes(x = 3.25, label = top_genes),
+    hjust = 0,
+    fill = NA,
+    label.color = NA,
+    size = 2.4
+  ) +
+
+  facet_grid(
+    facet ~ .,
+    scales = "free_y",
+    space = "free_y"
+  ) +
+
+  scale_color_gradient(
+    low = "yellow",
+    high = "green",
+    name = "|GO log2FC|"
+  ) +
+
+  scale_size_continuous(
+    name = "Genes per GO",
+    range = c(1.5, 6)
+  ) +
+
+  scale_x_continuous(
+    limits = c(0.05, 4.9),
+    breaks = c(1, 1.85, 2.65, 3.25),
+    labels = c("GO term", "GO log2FC", "Gene count", "Top 5 genes")
+  ) +
+
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
+
+  theme_minimal(base_size = 10) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(face = "bold"),
+    strip.text.y = element_text(face = "bold", angle = 0),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    legend.position = "right"
+  )
+
+png(
+  file.path(output_dir, "single_GO_summary_plot.png"),
+  width = 2600,
+  height = max(1400, 28 * nrow(plot_data)),
+  res = 200
+)
+
+print(single_plot)
+
+dev.off()
+
+
+# =========================================================
+# SAVE TABLES
+# =========================================================
+
+write_csv(go_long, file.path(output_dir, "parsed_GO_terms_combined.csv"))
+write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_combined.csv"))
+write_csv(
+  go_gene_long %>% left_join(gene_long, by = "gene_id"),
+  file.path(output_dir, "GO_gene_combined_long.csv")
+)
+
+message("Done. Single plot saved in: ", output_dir)
