@@ -1,7 +1,7 @@
 # =========================================================
 # Gene-only log2FC heatmaps
 # Standalone horizontal panels with gene names per panel
-# No dendrograms, one legend per plot, fixed cell height
+# Packed panels, top-aligned, one legend per plot
 # =========================================================
 
 library(tidyverse)
@@ -115,7 +115,7 @@ draw_standalone_horizontal_panels <- function(
     value_col,
     file,
     panel_titles = NULL,
-    panel_colors = NULL
+    panel_backgrounds = NULL
 ) {
 
   panel_df_list <- panel_df_list[lengths(panel_df_list) > 0]
@@ -127,10 +127,15 @@ draw_standalone_horizontal_panels <- function(
   n_panels <- length(panel_df_list)
   max_rows <- max(sapply(panel_df_list, nrow))
 
+  PANEL_WIDTH_MM <- 38
+  LEGEND_WIDTH_MM <- 18
+  PANEL_GAP_MM <- 2
+  TOP_MARGIN_MM <- 8
+
   png(
     file,
-    width = max(1800, 470 * n_panels + 180),
-    height = max(800, 45 * max_rows),
+    width = max(1000, 90 * n_panels + 220),
+    height = max(700, 45 * max_rows),
     res = 200
   )
 
@@ -138,13 +143,20 @@ draw_standalone_horizontal_panels <- function(
 
   pushViewport(
     viewport(
-      layout = grid.layout(
-        nrow = 1,
-        ncol = n_panels + 1,
-        widths = unit(c(rep(1, n_panels), 0.35), "null")
-      )
+      x = unit(4, "mm"),
+      y = unit(1, "npc") - unit(TOP_MARGIN_MM, "mm"),
+      width = unit(
+        n_panels * PANEL_WIDTH_MM +
+          (n_panels - 1) * PANEL_GAP_MM +
+          LEGEND_WIDTH_MM,
+        "mm"
+      ),
+      height = unit(1, "npc") - unit(TOP_MARGIN_MM, "mm"),
+      just = c("left", "top")
     )
   )
+
+  current_x <- unit(0, "mm")
 
   for (i in seq_along(panel_df_list)) {
 
@@ -164,35 +176,32 @@ draw_standalone_horizontal_panels <- function(
       panel_title <- panel_titles[[panel_name]]
     }
 
-    top_anno <- NULL
+    panel_height <- unit(nrow(mat) * CELL_HEIGHT_MM + 14, "mm")
 
-    if (!is.null(panel_colors) && panel_name %in% names(panel_colors)) {
-      this_color <- panel_colors[[panel_name]]
-
-      top_anno <- HeatmapAnnotation(
-        panel_color = factor(this_color),
-        col = list(panel_color = setNames(this_color, this_color)),
-        show_annotation_name = FALSE,
-        show_legend = FALSE,
-        simple_anno_size = unit(3, "mm")
-      )
+    bg_col <- NA
+    if (!is.null(panel_backgrounds) && panel_name %in% names(panel_backgrounds)) {
+      bg_col <- panel_backgrounds[[panel_name]]
     }
 
     pushViewport(
       viewport(
-        layout.pos.row = 1,
-        layout.pos.col = i,
+        x = current_x,
         y = unit(1, "npc"),
-        just = "top"
+        width = unit(PANEL_WIDTH_MM, "mm"),
+        height = panel_height,
+        just = c("left", "top"),
+        gp = gpar(fill = bg_col, col = NA)
       )
     )
+
+    grid.rect(gp = gpar(fill = bg_col, col = NA))
 
     draw(
       Heatmap(
         mat,
         name = "log2FC",
         col = log2fc_col_fun,
-        top_annotation = top_anno,
+
         column_title = panel_title,
         column_title_gp = gpar(fontsize = 8, fontface = "bold"),
 
@@ -217,12 +226,17 @@ draw_standalone_horizontal_panels <- function(
     )
 
     popViewport()
+
+    current_x <- current_x + unit(PANEL_WIDTH_MM + PANEL_GAP_MM, "mm")
   }
 
   pushViewport(
     viewport(
-      layout.pos.row = 1,
-      layout.pos.col = n_panels + 1
+      x = current_x + unit(4, "mm"),
+      y = unit(1, "npc"),
+      width = unit(LEGEND_WIDTH_MM, "mm"),
+      height = unit(60, "mm"),
+      just = c("left", "top")
     )
   )
 
@@ -242,6 +256,7 @@ draw_standalone_horizontal_panels <- function(
 
 # =========================================================
 # 1. COMPARISON HEATMAP
+#    Each comparison/direction is its own standalone panel.
 # =========================================================
 
 comparison_panel_list <- list()
@@ -259,11 +274,14 @@ draw_standalone_horizontal_panels(
   panel_df_list = comparison_panel_list,
   value_col = "log2FC",
   file = file.path(output_dir, "gene_heatmap_horizontal_standalone_panels_by_comparison.png"),
-  panel_titles = comparison_labels
+  panel_titles = comparison_labels,
+  panel_backgrounds = NULL
 )
 
 # =========================================================
 # 2. COLOR HEATMAP
+#    Each gene color is its own standalone panel.
+#    Panel background is shaded by gene color.
 # =========================================================
 
 gene_color_summary <- gene_long_with_color %>%
@@ -292,7 +310,7 @@ draw_standalone_horizontal_panels(
   value_col = "mean_log2FC",
   file = file.path(output_dir, "gene_heatmap_horizontal_standalone_panels_by_color.png"),
   panel_titles = NULL,
-  panel_colors = color_panel_colors
+  panel_backgrounds = color_panel_colors
 )
 
 # =========================================================
