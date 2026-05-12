@@ -166,18 +166,26 @@ merged <- go_gene_long %>%
   left_join(gene_long, by = "gene_id")
 
 # =========================================================
-# TOP GENES AND UNIQUENESS COLORING
+# GENE UNIQUENESS
 # =========================================================
 
 gene_uniqueness <- go_gene_long %>%
   distinct(go_term, gene_id) %>%
-  count(gene_id, name = "go_occurrences") %>%
+  count(gene_id, name = "go_occurrences")
+
+max_occurrence <- max(gene_uniqueness$go_occurrences, na.rm = TRUE)
+
+gene_uniqueness <- gene_uniqueness %>%
   mutate(
     gene_text_color = col_numeric(
-      palette = c("#000000", "#D0D0D0"),
-      domain = range(go_occurrences, na.rm = TRUE)
+      palette = c("#000000", "#D9D9D9"),
+      domain = c(1, max_occurrence)
     )(go_occurrences)
   )
+
+# =========================================================
+# TOP GENES
+# =========================================================
 
 top_gene_labels <- merged %>%
   filter(!is.na(gene_log2FC)) %>%
@@ -187,10 +195,18 @@ top_gene_labels <- merged %>%
   ungroup() %>%
   left_join(gene_uniqueness, by = "gene_id") %>%
   mutate(
-    gene_label = paste0(
-      "<span style='color:", gene_text_color, ";'>",
-      gene_id,
-      "</span>"
+    gene_label = ifelse(
+      go_occurrences == 1,
+      paste0(
+        "<b><span style='color:#000000;'>",
+        gene_id,
+        "</span></b>"
+      ),
+      paste0(
+        "<span style='color:", gene_text_color, ";'>",
+        gene_id,
+        "</span>"
+      )
     )
   ) %>%
   group_by(facet, go_term) %>%
@@ -207,10 +223,16 @@ plot_data <- go_long %>%
   left_join(
     go_gene_long %>%
       group_by(facet, go_term) %>%
-      summarise(gene_count = n_distinct(gene_id), .groups = "drop"),
+      summarise(
+        gene_count = n_distinct(gene_id),
+        .groups = "drop"
+      ),
     by = c("facet", "go_term")
   ) %>%
-  left_join(top_gene_labels, by = c("facet", "go_term")) %>%
+  left_join(
+    top_gene_labels,
+    by = c("facet", "go_term")
+  ) %>%
   mutate(
     gene_count = replace_na(gene_count, 0),
     top_genes = replace_na(top_genes, ""),
@@ -221,10 +243,12 @@ plot_data <- go_long %>%
   mutate(go_order = row_number()) %>%
   ungroup() %>%
   mutate(
-    go_term_wrapped = str_wrap(go_term, width = 48),
+    go_term_wrapped = str_wrap(go_term, width = 45),
     go_term_factor = factor(
       paste(facet, go_order, go_term_wrapped, sep = "___"),
-      levels = rev(paste(facet, go_order, go_term_wrapped, sep = "___"))
+      levels = rev(
+        paste(facet, go_order, go_term_wrapped, sep = "___")
+      )
     )
   )
 
@@ -233,7 +257,11 @@ max_abs_go <- max(plot_data$abs_go_log2FC, na.rm = TRUE)
 plot_data <- plot_data %>%
   mutate(
     bar_x_start = 1.35,
-    bar_x_end = 1.35 + rescale(abs_go_log2FC, to = c(0.05, 0.95), from = c(0, max_abs_go))
+    bar_x_end = 1.35 + rescale(
+      abs_go_log2FC,
+      to = c(0.05, 0.95),
+      from = c(0, max_abs_go)
+    )
   )
 
 # =========================================================
@@ -242,15 +270,18 @@ plot_data <- plot_data %>%
 
 single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
 
-  # GO term column
+  # GO TERM COLUMN
   geom_text(
-    aes(x = 1.05, label = go_term_wrapped),
+    aes(
+      x = 1.05,
+      label = go_term_wrapped
+    ),
     hjust = 1,
-    size = 2.8,
-    lineheight = 0.9
+    size = 2.6,
+    lineheight = 0.75
   ) +
 
-  # GO log2FC bars
+  # GO LOG2FC BAR
   geom_segment(
     aes(
       x = bar_x_start,
@@ -262,6 +293,7 @@ single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
     lineend = "round"
   ) +
 
+  # GO LOG2FC VALUES
   geom_text(
     aes(
       x = 2.38,
@@ -271,22 +303,32 @@ single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
     hjust = 0.5
   ) +
 
-  # Gene-count dot column
+  # GENE COUNT DOTS
   geom_point(
-    aes(x = 2.85, size = gene_count),
+    aes(
+      x = 2.85,
+      size = gene_count
+    ),
     color = "black",
     alpha = 0.85
   ) +
 
+  # GENE COUNT NUMBERS
   geom_text(
-    aes(x = 3.13, label = gene_count),
+    aes(
+      x = 3.02,
+      label = gene_count
+    ),
     size = 2.5,
     hjust = 0
   ) +
 
-  # Top genes column
+  # TOP GENES
   ggtext::geom_richtext(
-    aes(x = 3.65, label = top_genes),
+    aes(
+      x = 3.65,
+      label = top_genes
+    ),
     hjust = 0,
     fill = NA,
     label.color = NA,
@@ -315,12 +357,21 @@ single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
   scale_x_continuous(
     limits = c(0.05, 5.25),
     breaks = c(1.05, 1.8, 2.85, 3.65),
-    labels = c("GO term", "GO log2FC", "Gene count", "Top 5 genes")
+    labels = c(
+      "GO term",
+      "GO log2FC",
+      "Gene count",
+      "Top 5 genes"
+    )
   ) +
 
-  labs(x = NULL, y = NULL) +
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
 
   theme_minimal(base_size = 11) +
+
   theme(
     panel.grid = element_blank(),
 
@@ -331,11 +382,13 @@ single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
     ),
 
     strip.placement = "outside",
+
     strip.background.y = element_rect(
       fill = "grey88",
       color = "grey35",
       linewidth = 0.7
     ),
+
     strip.text.y.left = element_text(
       angle = 90,
       face = "bold",
@@ -354,18 +407,25 @@ single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
     ),
 
     plot.margin = margin(10, 20, 10, 10),
+
     legend.position = "right",
-    legend.title = element_text(face = "bold")
+
+    legend.title = element_text(
+      face = "bold"
+    )
   )
 
 # =========================================================
-# SAVE PLOT
+# SAVE PNG
 # =========================================================
 
 png(
-  file.path(output_dir, "single_GO_summary_plot_boxed_facets.png"),
+  file.path(
+    output_dir,
+    "single_GO_summary_plot_boxed_facets.png"
+  ),
   width = 3000,
-  height = max(1600, 34 * nrow(plot_data)),
+  height = max(1800, 52 * nrow(plot_data)),
   res = 220
 )
 
@@ -373,11 +433,17 @@ print(single_plot)
 
 dev.off()
 
-# Optional PDF output
+# =========================================================
+# SAVE PDF
+# =========================================================
+
 pdf(
-  file.path(output_dir, "single_GO_summary_plot_boxed_facets.pdf"),
+  file.path(
+    output_dir,
+    "single_GO_summary_plot_boxed_facets.pdf"
+  ),
   width = 15,
-  height = max(8, 0.18 * nrow(plot_data))
+  height = max(8, 0.28 * nrow(plot_data))
 )
 
 print(single_plot)
@@ -388,9 +454,24 @@ dev.off()
 # SAVE TABLES
 # =========================================================
 
-write_csv(go_long, file.path(output_dir, "parsed_GO_terms_combined.csv"))
-write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_combined.csv"))
-write_csv(merged, file.path(output_dir, "GO_gene_combined_long.csv"))
-write_csv(plot_data, file.path(output_dir, "single_GO_summary_plot_data.csv"))
+write_csv(
+  go_long,
+  file.path(output_dir, "parsed_GO_terms_combined.csv")
+)
 
-message("Done. Single boxed-facet plot saved in: ", output_dir)
+write_csv(
+  gene_long,
+  file.path(output_dir, "parsed_gene_log2FC_combined.csv")
+)
+
+write_csv(
+  merged,
+  file.path(output_dir, "GO_gene_combined_long.csv")
+)
+
+write_csv(
+  plot_data,
+  file.path(output_dir, "single_GO_summary_plot_data.csv")
+)
+
+message("Done. Plot saved in: ", output_dir)
