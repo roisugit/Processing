@@ -1,45 +1,255 @@
-make_one_column_heatmap <- function(df, value_col, panel_title = NULL, panel_color = NULL) {
+# =========================================================
+# Gene-only log2FC heatmaps
+# Horizontal thin panels
+# =========================================================
 
-  mat <- df %>%
-    select(gene_id, value = all_of(value_col)) %>%
-    column_to_rownames("gene_id") %>%
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(grid)
+
+# =========================================================
+# USER SETTINGS
+# =========================================================
+
+datasets <- tribble(
+  ~comparison,    ~direction, ~gene_file,
+  "comparison_1", "up",       "comp1_up_genes.csv",
+  "comparison_1", "down",     "",
+  "comparison_2", "up",       "comp2_up_genes.csv",
+  "comparison_2", "down",     "comp2_down_genes.csv",
+  "comparison_3", "up",       "",
+  "comparison_3", "down",     "comp3_down_genes.csv"
+)
+
+comparison_labels <- c(
+  "comparison_1_up" = "Comparison 1 Up",
+  "comparison_1_down" = "Comparison 1 Down",
+  "comparison_2_up" = "Comparison 2 Up",
+  "comparison_2_down" = "Comparison 2 Down",
+  "comparison_3_up" = "Comparison 3 Up",
+  "comparison_3_down" = "Comparison 3 Down"
+)
+
+gene_colors_file <- "gene_colors.tsv"
+output_dir <- "heatmap_outputs"
+dir.create(output_dir, showWarnings = FALSE)
+
+TOP_N <- 50
+
+GENE_ID_COL <- 1
+GENE_LOG2FC_COL <- 2
+
+log2fc_col_fun <- colorRamp2(
+  c(-5, 0, 5),
+  c("blue", "white", "red")
+)
+
+# =========================================================
+# LOAD GENE COLORS
+# =========================================================
+
+gene_colors_df <- read_tsv(gene_colors_file, show_col_types = FALSE) %>%
+  select(gene_id = 1, gene_color = 2) %>%
+  mutate(
+    gene_id = as.character(gene_id),
+    gene_color = as.character(gene_color)
+  ) %>%
+  distinct(gene_id, .keep_all = TRUE)
+
+# =========================================================
+# LOAD GENE FILES
+# =========================================================
+
+gene_long_list <- list()
+
+for (i in seq_len(nrow(datasets))) {
+
+  comparison <- datasets$comparison[i]
+  direction <- datasets$direction[i]
+  gene_file <- datasets$gene_file[i]
+  dataset <- paste(comparison, direction, sep = "_")
+
+  if (is.na(gene_file) || gene_file == "" || !file.exists(gene_file)) {
+    message("Skipping ", dataset)
+    next
+  }
+
+  message("Loading ", dataset)
+
+  gene_df <- read_csv(gene_file, show_col_types = FALSE)
+
+  gene_long_list[[dataset]] <- gene_df %>%
+    select(
+      gene_id = all_of(GENE_ID_COL),
+      log2FC = all_of(GENE_LOG2FC_COL)
+    ) %>%
+    mutate(
+      gene_id = as.character(gene_id),
+      log2FC = as.numeric(log2FC),
+      dataset = dataset
+    ) %>%
+    filter(!is.na(gene_id), gene_id != "", is.finite(log2FC))
+}
+
+gene_long <- bind_rows(gene_long_list)
+
+gene_long_with_color <- gene_long %>%
+  left_join(gene_colors_df, by = "gene_id") %>%
+  mutate(gene_color = replace_na(gene_color, "#FFFFFF"))
+
+# =========================================================
+# HELPER FUNCTION
+# =========================================================
+
+make_horizontal_panel_heatmap <- function(long_df, value_col, group_col, file, panel_labels = NULL) {
+
+  plot_df <- long_df %>%
+    group_by(.data[[group_col]], gene_id) %>%
+    summarise(value = mean(.data[[value_col]], na.rm = TRUE), .groups = "drop") %>%
+    group_by(.data[[group_col]]) %>%
+    slice_max(order_by = abs(value), n = TOP_N, with_ties = FALSE) %>%
+    ungroup()
+
+  mat <- plot_df %>%
+    mutate(panel_gene = paste(.data[[group_col]], gene_id, sep = "__")) %>%
+    select(panel_gene, panel = all_of(group_col), value) %>%
+    pivot_wider(names_from = panel, values_from = value) %>%
+    column_to_rownames("panel_gene") %>%
     as.matrix()
 
-  colnames(mat) <- "log2FC"
+  mat[is.na(mat)] <- 0
 
-  top_anno <- NULL
+  rownames(mat) <- sub("^.*__", "", rownames(mat))
 
-  if (!is.null(panel_color)) {
-    top_anno <- HeatmapAnnotation(
-      panel_color = factor(panel_color),
-      col = list(panel_color = setNames(panel_color, panel_color)),
-      show_annotation_name = FALSE,
-      show_legend = FALSE,
-      simple_anno_size = unit(3, "mm")
+  if (!is.null(panel_labels)) {
+    colnames(mat) <- ifelse(
+      colnames(mat) %in% names(panel_labels),
+      panel_labels[colnames(mat)],
+      colnames(mat)
     )
   }
 
+  png(
+    file,
+    width = max(1600, 180 * ncol(mat)),
+    height = max(1000, 14 * nrow(mat)),
+    res = 200
+  )
+
+  draw(
+    Heatmap(
+      mat,
+      name = "log2FC",
+      col = log2fc_col_fun,
+      cluster_rows = FALSE,
+      cluster_columns = FALSE,
+      show_row_names = TRUE,
+      row_names_gp = gpar(fontsize = 5),
+      column_names_rot = 45,
+      rect_gp = gpar(col = "grey80", lwd = 0.25),
+      width = unit(4 * ncol(mat), "mm"),
+      heatmap_legend_param = list(
+        title = "log2FC",
+        at = c(-5, 0, 5),
+        labels = c("-5", "0", "5")
+      )
+    ),
+    heatmap_legend_side = "right"
+  )
+
+  dev.off()
+}
+
+# =========================================================
+# 1. COMPARISON HEATMAP
+#    Columns go left to right by comparison/direction.
+# =========================================================
+
+make_horizontal_panel_heatmap(
+  long_df = gene_long,
+  value_col = "log2FC",
+  group_col = "dataset",
+  file = file.path(output_dir, "gene_heatmap_horizontal_panels_by_comparison.png"),
+  panel_labels = comparison_labels
+)
+
+# =========================================================
+# 2. COLOR HEATMAP
+#    Columns go left to right by gene color group.
+# =========================================================
+
+gene_color_summary <- gene_long_with_color %>%
+  group_by(gene_color, gene_id) %>%
+  summarise(
+    mean_log2FC = mean(log2FC, na.rm = TRUE),
+    max_abs_log2FC = max(abs(log2FC), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+make_horizontal_panel_heatmap(
+  long_df = gene_color_summary,
+  value_col = "mean_log2FC",
+  group_col = "gene_color",
+  file = file.path(output_dir, "gene_heatmap_horizontal_panels_by_color.png"),
+  panel_labels = NULL
+)
+
+# =========================================================
+# 3. BASIC HEATMAP
+#    No row panels, all selected genes, comparison columns retained.
+# =========================================================
+
+basic_genes <- union(
+  gene_long %>%
+    group_by(dataset) %>%
+    slice_max(order_by = abs(log2FC), n = TOP_N, with_ties = FALSE) %>%
+    pull(gene_id),
+  gene_color_summary %>%
+    group_by(gene_color) %>%
+    slice_max(order_by = max_abs_log2FC, n = TOP_N, with_ties = FALSE) %>%
+    pull(gene_id)
+)
+
+basic_mat <- gene_long %>%
+  filter(gene_id %in% basic_genes) %>%
+  group_by(gene_id, dataset) %>%
+  summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = dataset, values_from = log2FC) %>%
+  column_to_rownames("gene_id") %>%
+  as.matrix()
+
+basic_mat[is.na(basic_mat)] <- 0
+
+png(
+  file.path(output_dir, "gene_heatmap_basic_all_selected_genes.png"),
+  width = max(1400, 140 * ncol(basic_mat)),
+  height = max(1400, 14 * nrow(basic_mat)),
+  res = 200
+)
+
+draw(
   Heatmap(
-    mat,
+    basic_mat,
     name = "log2FC",
     col = log2fc_col_fun,
-    top_annotation = top_anno,
-    column_title = panel_title,
-    column_title_gp = gpar(fontsize = 8, fontface = "bold"),
     cluster_rows = TRUE,
     cluster_columns = FALSE,
     show_row_names = TRUE,
-    row_names_side = "left",
     row_names_gp = gpar(fontsize = 5),
-    show_column_names = FALSE,
+    column_names_rot = 45,
+    rect_gp = gpar(col = "grey80", lwd = 0.3)
+  ),
+  heatmap_legend_side = "right"
+)
 
-    width = unit(4, "mm"),   # thin 1-column gene box
-    rect_gp = gpar(col = "grey80", lwd = 0.25),
+dev.off()
 
-    heatmap_legend_param = list(
-      title = "log2FC",
-      at = c(-5, 0, 5),
-      labels = c("-5", "0", "5")
-    )
-  )
-}
+# =========================================================
+# SAVE TABLES
+# =========================================================
+
+write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_long.csv"))
+write_csv(gene_color_summary, file.path(output_dir, "gene_color_summary.csv"))
+
+message("Done. Heatmaps saved in: ", output_dir)
