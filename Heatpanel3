@@ -1,0 +1,45 @@
+make_one_column_heatmap <- function(df, value_col, panel_title = NULL, panel_color = NULL) {
+
+  mat <- df %>%
+    select(gene_id, value = all_of(value_col)) %>%
+    column_to_rownames("gene_id") %>%
+    as.matrix()
+
+  colnames(mat) <- "log2FC"
+
+  top_anno <- NULL
+
+  if (!is.null(panel_color)) {
+    top_anno <- HeatmapAnnotation(
+      panel_color = factor(panel_color),
+      col = list(panel_color = setNames(panel_color, panel_color)),
+      show_annotation_name = FALSE,
+      show_legend = FALSE,
+      simple_anno_size = unit(3, "mm")
+    )
+  }
+
+  Heatmap(
+    mat,
+    name = "log2FC",
+    col = log2fc_col_fun,
+    top_annotation = top_anno,
+    column_title = panel_title,
+    column_title_gp = gpar(fontsize = 8, fontface = "bold"),
+    cluster_rows = TRUE,
+    cluster_columns = FALSE,
+    show_row_names = TRUE,
+    row_names_side = "left",
+    row_names_gp = gpar(fontsize = 5),
+    show_column_names = FALSE,
+
+    width = unit(4, "mm"),   # thin 1-column gene box
+    rect_gp = gpar(col = "grey80", lwd = 0.25),
+
+    heatmap_legend_param = list(
+      title = "log2FC",
+      at = c(-5, 0, 5),
+      labels = c("-5", "0", "5")
+    )
+  )
+}
