@@ -1,9 +1,7 @@
 # =========================================================
 # Gene-only log2FC heatmaps
-# Separate combination, color, and combination+color heatmaps
-# Top 30 up + top 30 down globally
-# Combination-only plot: at least 5 genes per combination
-# Color-aware plots: at least 5 genes per combination and 3 genes per color group
+# Significant files used for gene selection
+# Merged all-log2FC files used to fill heatmap cells
 # =========================================================
 
 library(tidyverse)
@@ -25,13 +23,17 @@ datasets <- tribble(
   "comparison_3", "down",     "comp3_down_genes.csv"
 )
 
+merged_log2fc_files <- tribble(
+  ~comparison,    ~merged_file,
+  "comparison_1", "comp1_merged_all_log2fc.csv",
+  "comparison_2", "comp2_merged_all_log2fc.csv",
+  "comparison_3", "comp3_merged_all_log2fc.csv"
+)
+
 comparison_labels <- c(
-  "comparison_1_up" = "Comparison 1 Up",
-  "comparison_1_down" = "Comparison 1 Down",
-  "comparison_2_up" = "Comparison 2 Up",
-  "comparison_2_down" = "Comparison 2 Down",
-  "comparison_3_up" = "Comparison 3 Up",
-  "comparison_3_down" = "Comparison 3 Down"
+  "comparison_1" = "Comparison 1",
+  "comparison_2" = "Comparison 2",
+  "comparison_3" = "Comparison 3"
 )
 
 gene_colors_file <- "gene_colors.tsv"
@@ -47,6 +49,9 @@ MIN_PER_COLOR_GROUP <- 3
 
 GENE_ID_COL <- 1
 GENE_LOG2FC_COL <- 2
+
+MERGED_GENE_ID_COL <- 1
+MERGED_LOG2FC_COL <- 2
 
 log2fc_col_fun <- colorRamp2(
   c(-5, 0, 5),
@@ -66,7 +71,8 @@ gene_colors_df <- read_tsv(gene_colors_file, show_col_types = FALSE) %>%
   distinct(gene_id, .keep_all = TRUE)
 
 # =========================================================
-# LOAD GENE FILES
+# LOAD SIGNIFICANT GENE FILES
+# Used for gene selection only
 # =========================================================
 
 gene_long_list <- list()
@@ -83,7 +89,7 @@ for (i in seq_len(nrow(datasets))) {
     next
   }
 
-  message("Loading ", dataset)
+  message("Loading significant file: ", dataset)
 
   gene_df <- read_csv(gene_file, show_col_types = FALSE)
 
@@ -104,7 +110,7 @@ for (i in seq_len(nrow(datasets))) {
 gene_long <- bind_rows(gene_long_list)
 
 if (nrow(gene_long) == 0) {
-  stop("No gene files were loaded. Check file paths in datasets.")
+  stop("No significant gene files were loaded. Check file paths in datasets.")
 }
 
 gene_long_with_color <- gene_long %>%
@@ -112,7 +118,55 @@ gene_long_with_color <- gene_long %>%
   mutate(gene_color = replace_na(gene_color, "#FFFFFF"))
 
 # =========================================================
-# GLOBAL SELECTION HELPER
+# LOAD MERGED BACKGROUND LOG2FC FILES
+# Used to fill all plotted heatmap cells
+# =========================================================
+
+merged_long_list <- list()
+
+for (i in seq_len(nrow(merged_log2fc_files))) {
+
+  comparison <- merged_log2fc_files$comparison[i]
+  merged_file <- merged_log2fc_files$merged_file[i]
+
+  if (is.na(merged_file) || merged_file == "" || !file.exists(merged_file)) {
+    message("Skipping merged file for ", comparison)
+    next
+  }
+
+  message("Loading merged background log2FC for ", comparison)
+
+  merged_df <- read_csv(merged_file, show_col_types = FALSE)
+
+  gene_id_col_name <- names(merged_df)[MERGED_GENE_ID_COL]
+  log2fc_col_name <- names(merged_df)[MERGED_LOG2FC_COL]
+
+  merged_long_list[[comparison]] <- merged_df %>%
+    transmute(
+      gene_id = as.character(.data[[gene_id_col_name]]),
+      log2FC = as.numeric(.data[[log2fc_col_name]]),
+      comparison = comparison,
+      dataset = comparison
+    ) %>%
+    filter(!is.na(gene_id), gene_id != "", is.finite(log2FC))
+}
+
+merged_long <- bind_rows(merged_long_list)
+
+if (nrow(merged_long) == 0) {
+  warning("No merged files loaded. Falling back to significant-only values.")
+  heatmap_source_long <- gene_long %>%
+    mutate(dataset = comparison)
+} else {
+  heatmap_source_long <- merged_long
+}
+
+heatmap_source_with_color <- heatmap_source_long %>%
+  left_join(gene_colors_df, by = "gene_id") %>%
+  mutate(gene_color = replace_na(gene_color, "#FFFFFF"))
+
+# =========================================================
+# SELECTION HELPER
 # =========================================================
 
 select_constrained_genes <- function(
@@ -152,14 +206,8 @@ select_constrained_genes <- function(
     distinct(gene_id, .keep_all = TRUE)
 
   if (nrow(required) > total_genes) {
-    warning(
-      "Required minimums exceed TOTAL_GENES. Keeping the strongest required genes only."
-    )
-
-    return(
-      required %>%
-        slice_head(n = total_genes)
-    )
+    warning("Required minimums exceed TOTAL_GENES. Keeping strongest required genes only.")
+    return(required %>% slice_head(n = total_genes))
   }
 
   top_up_tbl <- df %>%
@@ -188,27 +236,53 @@ select_constrained_genes <- function(
     slice_head(n = max(0, total_genes - nrow(selected))) %>%
     mutate(selection_reason = "global_abs_fill")
 
-  final_tbl <- bind_rows(selected, fill) %>%
+  bind_rows(selected, fill) %>%
     arrange(
       desc(selection_reason %in% c("required_combination", "required_color_group")),
       desc(abs(.data[[value_col]]))
     ) %>%
     slice_head(n = total_genes)
+}
 
-  final_tbl
+# =========================================================
+# ROW SORTING HELPER
+# Sort by log2FC strength, then color if present
+# =========================================================
+
+get_row_order <- function(genes, include_color = TRUE) {
+
+  order_df <- heatmap_source_with_color %>%
+    filter(gene_id %in% genes) %>%
+    group_by(gene_id, gene_color) %>%
+    summarise(
+      max_abs_log2FC = max(abs(log2FC), na.rm = TRUE),
+      mean_log2FC = mean(log2FC, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  if (include_color) {
+    order_df %>%
+      arrange(desc(max_abs_log2FC), gene_color, desc(mean_log2FC), gene_id) %>%
+      pull(gene_id)
+  } else {
+    order_df %>%
+      arrange(desc(max_abs_log2FC), desc(mean_log2FC), gene_id) %>%
+      pull(gene_id)
+  }
 }
 
 # =========================================================
 # 1. COMBINATION HEATMAP
-# Top 30 up/down, at least 5 genes per combination
+# Top 30 up/down, at least 5 per combination
+# No color minimum
 # =========================================================
 
-combo_summary <- gene_long %>%
+combo_selection_summary <- gene_long %>%
   group_by(gene_id, dataset) %>%
   summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop")
 
 selected_combo_genes_tbl <- select_constrained_genes(
-  combo_summary,
+  combo_selection_summary,
   value_col = "log2FC",
   combo_col = "dataset",
   min_per_combo = MIN_PER_COMBINATION
@@ -216,35 +290,29 @@ selected_combo_genes_tbl <- select_constrained_genes(
 
 combo_genes <- selected_combo_genes_tbl$gene_id
 
-combo_mat <- combo_summary %>%
+combo_mat <- heatmap_source_long %>%
   filter(gene_id %in% combo_genes) %>%
+  group_by(gene_id, dataset) %>%
+  summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
   pivot_wider(names_from = dataset, values_from = log2FC) %>%
   column_to_rownames("gene_id") %>%
   as.matrix()
 
 combo_mat[is.na(combo_mat)] <- 0
 
-combo_row_order <- combo_summary %>%
-  filter(gene_id %in% combo_genes) %>%
-  group_by(gene_id) %>%
-  summarise(max_abs_log2FC = max(abs(log2FC)), .groups = "drop") %>%
-  arrange(desc(max_abs_log2FC)) %>%
-  pull(gene_id)
-
+combo_row_order <- get_row_order(combo_genes, include_color = FALSE)
+combo_row_order <- intersect(combo_row_order, rownames(combo_mat))
 combo_mat <- combo_mat[combo_row_order, , drop = FALSE]
 
-dataset_order <- datasets %>%
-  mutate(dataset = paste(comparison, direction, sep = "_")) %>%
-  pull(dataset)
-
-dataset_order <- intersect(dataset_order, colnames(combo_mat))
-combo_mat <- combo_mat[, dataset_order, drop = FALSE]
+comparison_order <- merged_log2fc_files$comparison
+comparison_order <- intersect(comparison_order, colnames(combo_mat))
+combo_mat <- combo_mat[, comparison_order, drop = FALSE]
 
 combo_column_labels <- comparison_labels[colnames(combo_mat)]
 combo_column_labels[is.na(combo_column_labels)] <- colnames(combo_mat)[is.na(combo_column_labels)]
 
 png(
-  file.path(output_dir, "gene_heatmap_combination_top30up_top30down_min5combo.png"),
+  file.path(output_dir, "gene_heatmap_combination_top30up_top30down_min5combo_filled.png"),
   width = max(1400, 160 * ncol(combo_mat)),
   height = max(1000, 42 * nrow(combo_mat)),
   res = 200
@@ -296,7 +364,7 @@ selected_color_genes_tbl <- select_constrained_genes(
 
 color_genes <- selected_color_genes_tbl$gene_id
 
-color_gene_summary <- gene_long_with_color %>%
+color_gene_summary <- heatmap_source_with_color %>%
   filter(gene_id %in% color_genes) %>%
   group_by(gene_id, gene_color) %>%
   summarise(
@@ -314,15 +382,13 @@ color_mat <- color_gene_summary %>%
 color_mat[is.na(color_mat)] <- 0
 
 color_row_order <- color_gene_summary %>%
-  group_by(gene_id) %>%
-  summarise(max_abs_log2FC = max(max_abs_log2FC), .groups = "drop") %>%
-  arrange(desc(max_abs_log2FC)) %>%
+  arrange(desc(max_abs_log2FC), gene_color, desc(mean_log2FC), gene_id) %>%
   pull(gene_id)
 
 color_mat <- color_mat[color_row_order, , drop = FALSE]
 
 png(
-  file.path(output_dir, "gene_heatmap_color_top30up_top30down_min5combo_min3color.png"),
+  file.path(output_dir, "gene_heatmap_color_top30up_top30down_min5combo_min3color_filled.png"),
   width = max(1400, 160 * ncol(color_mat)),
   height = max(1000, 42 * nrow(color_mat)),
   res = 200
@@ -354,29 +420,26 @@ draw(
 dev.off()
 
 # =========================================================
-# 3. COMBINATION + COLOR HEATMAP
-# Same combination heatmap, with unlabeled gene-color annotation column
+# 3. COMBINATION + UNLABELED COLOR ANNOTATION HEATMAP
 # Top 30 up/down, at least 5 per combination and 3 per color group
+# Color column is shown but not labeled
 # =========================================================
 
 combined_genes <- selected_color_genes_tbl$gene_id
 
-combined_mat <- combo_summary %>%
+combined_mat <- heatmap_source_long %>%
   filter(gene_id %in% combined_genes) %>%
+  group_by(gene_id, dataset) %>%
+  summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
   pivot_wider(names_from = dataset, values_from = log2FC) %>%
   column_to_rownames("gene_id") %>%
   as.matrix()
 
 combined_mat[is.na(combined_mat)] <- 0
 
-combined_row_order <- color_selection_summary %>%
-  filter(gene_id %in% combined_genes) %>%
-  group_by(gene_id) %>%
-  summarise(max_abs_log2FC = max(abs(log2FC)), .groups = "drop") %>%
-  arrange(desc(max_abs_log2FC)) %>%
-  pull(gene_id)
-
-combined_mat <- combined_mat[combined_row_order, dataset_order, drop = FALSE]
+combined_row_order <- get_row_order(combined_genes, include_color = TRUE)
+combined_row_order <- intersect(combined_row_order, rownames(combined_mat))
+combined_mat <- combined_mat[combined_row_order, comparison_order, drop = FALSE]
 
 combined_gene_colors <- gene_colors_df %>%
   right_join(tibble(gene_id = rownames(combined_mat)), by = "gene_id") %>%
@@ -392,6 +455,7 @@ color_annotation <- rowAnnotation(
     border = TRUE
   ),
   show_annotation_name = FALSE,
+  show_legend = FALSE,
   width = unit(4, "mm")
 )
 
@@ -399,7 +463,7 @@ combined_column_labels <- comparison_labels[colnames(combined_mat)]
 combined_column_labels[is.na(combined_column_labels)] <- colnames(combined_mat)[is.na(combined_column_labels)]
 
 png(
-  file.path(output_dir, "gene_heatmap_combination_plus_unlabeled_color_top30up_top30down.png"),
+  file.path(output_dir, "gene_heatmap_combination_plus_unlabeled_color_top30up_top30down_filled.png"),
   width = max(1500, 170 * ncol(combined_mat)),
   height = max(1000, 42 * nrow(combined_mat)),
   res = 200
@@ -436,7 +500,8 @@ dev.off()
 # SAVE TABLES
 # =========================================================
 
-write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_long.csv"))
+write_csv(gene_long, file.path(output_dir, "parsed_significant_gene_log2FC_long.csv"))
+write_csv(merged_long, file.path(output_dir, "parsed_merged_background_log2FC_long.csv"))
 write_csv(color_gene_summary, file.path(output_dir, "gene_color_summary.csv"))
 write_csv(selected_combo_genes_tbl, file.path(output_dir, "selected_combination_genes.csv"))
 write_csv(selected_color_genes_tbl, file.path(output_dir, "selected_color_and_combination_genes.csv"))
