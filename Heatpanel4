@@ -1,276 +1,197 @@
 # =========================================================
-# Gene-only log2FC heatmap
-# Global top 25 up + top 25 down across all comparisons/trends
-# Ensures each dataset/trend contributes at least 1 gene when possible
+# GLOBAL SELECTION HELPER
 # =========================================================
 
-library(tidyverse)
-library(ComplexHeatmap)
-library(circlize)
-library(grid)
+select_global_top50 <- function(df, group_col, value_col = "log2FC") {
 
-# =========================================================
-# USER SETTINGS
-# =========================================================
+  group_col <- enquo(group_col)
+  value_col <- enquo(value_col)
 
-datasets <- tribble(
-  ~comparison,    ~direction, ~gene_file,
-  "comparison_1", "up",       "comp1_up_genes.csv",
-  "comparison_1", "down",     "",
-  "comparison_2", "up",       "comp2_up_genes.csv",
-  "comparison_2", "down",     "comp2_down_genes.csv",
-  "comparison_3", "up",       "",
-  "comparison_3", "down",     "comp3_down_genes.csv"
-)
+  required <- df %>%
+    group_by(!!group_col) %>%
+    arrange(desc(abs(!!value_col)), .by_group = TRUE) %>%
+    slice(1) %>%
+    ungroup() %>%
+    mutate(selection_reason = "required_group_contribution")
 
-comparison_labels <- c(
-  "comparison_1_up" = "Comparison 1 Up",
-  "comparison_1_down" = "Comparison 1 Down",
-  "comparison_2_up" = "Comparison 2 Up",
-  "comparison_2_down" = "Comparison 2 Down",
-  "comparison_3_up" = "Comparison 3 Up",
-  "comparison_3_down" = "Comparison 3 Down"
-)
+  top_up <- df %>%
+    filter(!!value_col > 0) %>%
+    arrange(desc(!!value_col)) %>%
+    slice_head(n = 25) %>%
+    mutate(selection_reason = "global_top_up")
 
-gene_colors_file <- "gene_colors.tsv"
-output_dir <- "heatmap_outputs"
-dir.create(output_dir, showWarnings = FALSE)
+  top_down <- df %>%
+    filter(!!value_col < 0) %>%
+    arrange(!!value_col) %>%
+    slice_head(n = 25) %>%
+    mutate(selection_reason = "global_top_down")
 
-TOP_UP <- 25
-TOP_DOWN <- 25
-TOTAL_GENES <- TOP_UP + TOP_DOWN
-
-GENE_ID_COL <- 1
-GENE_LOG2FC_COL <- 2
-
-log2fc_col_fun <- colorRamp2(
-  c(-5, 0, 5),
-  c("blue", "white", "red")
-)
-
-# =========================================================
-# LOAD GENE COLORS
-# =========================================================
-
-gene_colors_df <- read_tsv(gene_colors_file, show_col_types = FALSE) %>%
-  select(gene_id = 1, gene_color = 2) %>%
-  mutate(
-    gene_id = as.character(gene_id),
-    gene_color = as.character(gene_color)
-  ) %>%
-  distinct(gene_id, .keep_all = TRUE)
-
-# =========================================================
-# LOAD GENE FILES
-# =========================================================
-
-gene_long_list <- list()
-
-for (i in seq_len(nrow(datasets))) {
-
-  comparison <- datasets$comparison[i]
-  direction <- datasets$direction[i]
-  gene_file <- datasets$gene_file[i]
-  dataset <- paste(comparison, direction, sep = "_")
-
-  if (is.na(gene_file) || gene_file == "" || !file.exists(gene_file)) {
-    message("Skipping ", dataset)
-    next
-  }
-
-  message("Loading ", dataset)
-
-  gene_df <- read_csv(gene_file, show_col_types = FALSE)
-
-  gene_id_col_name <- names(gene_df)[GENE_ID_COL]
-  log2fc_col_name <- names(gene_df)[GENE_LOG2FC_COL]
-
-  gene_long_list[[dataset]] <- gene_df %>%
-    transmute(
-      gene_id = as.character(.data[[gene_id_col_name]]),
-      log2FC = as.numeric(.data[[log2fc_col_name]]),
-      comparison = comparison,
-      direction = direction,
-      dataset = dataset
+  selected <- bind_rows(required, top_up, top_down) %>%
+    arrange(
+      desc(selection_reason == "required_group_contribution"),
+      desc(abs(!!value_col))
     ) %>%
-    filter(!is.na(gene_id), gene_id != "", is.finite(log2FC))
-}
+    distinct(gene_id, .keep_all = TRUE)
 
-gene_long <- bind_rows(gene_long_list)
+  fill <- df %>%
+    filter(!gene_id %in% selected$gene_id) %>%
+    arrange(desc(abs(!!value_col))) %>%
+    distinct(gene_id, .keep_all = TRUE) %>%
+    slice_head(n = max(0, 50 - nrow(selected))) %>%
+    mutate(selection_reason = "global_abs_fill")
 
-if (nrow(gene_long) == 0) {
-  stop("No gene files were loaded. Check file paths in datasets.")
-}
-
-gene_long_with_color <- gene_long %>%
-  left_join(gene_colors_df, by = "gene_id") %>%
-  mutate(gene_color = replace_na(gene_color, "#FFFFFF"))
-
-# =========================================================
-# GLOBAL GENE SELECTION
-# Top 25 positive + top 25 negative log2FC entries globally,
-# while forcing each loaded dataset/trend to contribute >=1 gene.
-# =========================================================
-
-gene_dataset_summary <- gene_long %>%
-  group_by(gene_id, comparison, direction, dataset) %>%
-  summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
-  mutate(
-    abs_log2FC = abs(log2FC),
-    signed_rank_value = case_when(
-      direction == "up" ~ log2FC,
-      direction == "down" ~ -log2FC,
-      TRUE ~ abs_log2FC
-    )
-  )
-
-# One representative gene per loaded comparison/trend.
-required_genes <- gene_dataset_summary %>%
-  group_by(dataset) %>%
-  arrange(desc(signed_rank_value), desc(abs_log2FC), .by_group = TRUE) %>%
-  slice(1) %>%
-  ungroup() %>%
-  mutate(selection_reason = "required_dataset_contribution")
-
-top_up_entries <- gene_dataset_summary %>%
-  filter(log2FC > 0) %>%
-  arrange(desc(log2FC)) %>%
-  slice_head(n = TOP_UP) %>%
-  mutate(selection_reason = "global_top_up")
-
-top_down_entries <- gene_dataset_summary %>%
-  filter(log2FC < 0) %>%
-  arrange(log2FC) %>%
-  slice_head(n = TOP_DOWN) %>%
-  mutate(selection_reason = "global_top_down")
-
-selected_entries <- bind_rows(
-  required_genes,
-  top_up_entries,
-  top_down_entries
-) %>%
-  arrange(
-    desc(selection_reason == "required_dataset_contribution"),
-    desc(abs_log2FC)
-  ) %>%
-  distinct(gene_id, .keep_all = TRUE)
-
-# Fill remaining slots to exactly 50 unique genes, if possible.
-fill_genes <- gene_dataset_summary %>%
-  filter(!gene_id %in% selected_entries$gene_id) %>%
-  arrange(desc(abs_log2FC)) %>%
-  distinct(gene_id, .keep_all = TRUE) %>%
-  slice_head(n = max(0, TOTAL_GENES - nrow(selected_entries))) %>%
-  mutate(selection_reason = "global_abs_fill")
-
-selected_genes_tbl <- bind_rows(selected_entries, fill_genes) %>%
-  arrange(
-    desc(selection_reason == "required_dataset_contribution"),
-    desc(abs_log2FC)
-  ) %>%
-  slice_head(n = TOTAL_GENES)
-
-selected_genes <- selected_genes_tbl$gene_id
-
-missing_required <- setdiff(required_genes$gene_id, selected_genes)
-
-if (length(missing_required) > 0) {
-  warning(
-    "Some required dataset-contribution genes were not retained because there were more required genes than available slots: ",
-    paste(missing_required, collapse = ", ")
-  )
+  bind_rows(selected, fill) %>%
+    arrange(
+      desc(selection_reason == "required_group_contribution"),
+      desc(abs(!!value_col))
+    ) %>%
+    slice_head(n = 50)
 }
 
 # =========================================================
-# BUILD ONE COHESIVE HEATMAP MATRIX
+# 1. SEPARATE COMBINATION HEATMAP
 # =========================================================
 
-heatmap_mat <- gene_dataset_summary %>%
-  filter(gene_id %in% selected_genes) %>%
-  select(gene_id, dataset, log2FC) %>%
+combo_summary <- gene_long %>%
+  group_by(gene_id, dataset) %>%
+  summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop")
+
+selected_combo_genes_tbl <- select_global_top50(
+  combo_summary,
+  group_col = dataset,
+  value_col = log2FC
+)
+
+combo_genes <- selected_combo_genes_tbl$gene_id
+
+combo_mat <- combo_summary %>%
+  filter(gene_id %in% combo_genes) %>%
   pivot_wider(names_from = dataset, values_from = log2FC) %>%
   column_to_rownames("gene_id") %>%
   as.matrix()
 
-heatmap_mat[is.na(heatmap_mat)] <- 0
+combo_mat[is.na(combo_mat)] <- 0
 
-# Order rows by strongest observed effect.
-row_order <- gene_dataset_summary %>%
-  filter(gene_id %in% selected_genes) %>%
+combo_row_order <- combo_summary %>%
+  filter(gene_id %in% combo_genes) %>%
   group_by(gene_id) %>%
-  summarise(max_abs_log2FC = max(abs_log2FC), .groups = "drop") %>%
+  summarise(max_abs_log2FC = max(abs(log2FC)), .groups = "drop") %>%
   arrange(desc(max_abs_log2FC)) %>%
   pull(gene_id)
 
-heatmap_mat <- heatmap_mat[row_order, , drop = FALSE]
+combo_mat <- combo_mat[combo_row_order, , drop = FALSE]
 
-# Keep columns in dataset input order.
 dataset_order <- datasets %>%
   mutate(dataset = paste(comparison, direction, sep = "_")) %>%
   pull(dataset)
 
-dataset_order <- intersect(dataset_order, colnames(heatmap_mat))
-heatmap_mat <- heatmap_mat[, dataset_order, drop = FALSE]
+dataset_order <- intersect(dataset_order, colnames(combo_mat))
+combo_mat <- combo_mat[, dataset_order, drop = FALSE]
 
-column_labels <- comparison_labels[colnames(heatmap_mat)]
-column_labels[is.na(column_labels)] <- colnames(heatmap_mat)[is.na(column_labels)]
-
-# Optional gene color row annotation.
-row_gene_colors <- gene_colors_df %>%
-  filter(gene_id %in% rownames(heatmap_mat)) %>%
-  distinct(gene_id, .keep_all = TRUE) %>%
-  right_join(tibble(gene_id = rownames(heatmap_mat)), by = "gene_id") %>%
-  mutate(gene_color = replace_na(gene_color, "#FFFFFF")) %>%
-  pull(gene_color)
-
-row_ha <- rowAnnotation(
-  Gene_Color = anno_simple(
-    row_gene_colors,
-    col = setNames(row_gene_colors, row_gene_colors),
-    border = TRUE
-  ),
-  width = unit(4, "mm"),
-  show_annotation_name = TRUE
-)
-
-# =========================================================
-# DRAW ONE HEATMAP
-# =========================================================
+combo_column_labels <- comparison_labels[colnames(combo_mat)]
+combo_column_labels[is.na(combo_column_labels)] <- colnames(combo_mat)[is.na(combo_column_labels)]
 
 png(
-  file.path(output_dir, "gene_heatmap_global_top25_up_top25_down_cohesive.png"),
-  width = max(1400, 160 * ncol(heatmap_mat)),
-  height = max(1000, 42 * nrow(heatmap_mat)),
+  file.path(output_dir, "gene_heatmap_combination_global_top25_up_top25_down.png"),
+  width = max(1400, 160 * ncol(combo_mat)),
+  height = max(1000, 42 * nrow(combo_mat)),
   res = 200
 )
 
 draw(
   Heatmap(
-    heatmap_mat,
+    combo_mat,
     name = "log2FC",
     col = log2fc_col_fun,
-
     cluster_rows = FALSE,
     cluster_columns = FALSE,
     show_row_dend = FALSE,
     show_column_dend = FALSE,
-
-    left_annotation = row_ha,
-
     show_row_names = TRUE,
     row_names_gp = gpar(fontsize = 6),
-
-    column_labels = column_labels,
+    column_labels = combo_column_labels,
     column_names_rot = 45,
     column_names_gp = gpar(fontsize = 8),
-
     rect_gp = gpar(col = "grey80", lwd = 0.3),
-
-    width = unit(ncol(heatmap_mat) * 8, "mm"),
-    height = unit(nrow(heatmap_mat) * 4, "mm"),
-
+    width = unit(ncol(combo_mat) * 8, "mm"),
+    height = unit(nrow(combo_mat) * 4, "mm"),
     heatmap_legend_param = list(
       title = "log2FC",
+      at = c(-5, 0, 5),
+      labels = c("-5", "0", "5")
+    )
+  ),
+  heatmap_legend_side = "right"
+)
+
+dev.off()
+
+# =========================================================
+# 2. SEPARATE COLOR HEATMAP
+# =========================================================
+
+color_summary <- gene_long_with_color %>%
+  group_by(gene_id, gene_color, dataset) %>%
+  summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop")
+
+color_gene_summary <- color_summary %>%
+  group_by(gene_id, gene_color) %>%
+  summarise(
+    mean_log2FC = mean(log2FC, na.rm = TRUE),
+    max_abs_log2FC = max(abs(log2FC), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+selected_color_genes_tbl <- color_gene_summary %>%
+  rename(log2FC = mean_log2FC) %>%
+  select_global_top50(
+    group_col = gene_color,
+    value_col = log2FC
+  )
+
+color_genes <- selected_color_genes_tbl$gene_id
+
+color_mat <- color_gene_summary %>%
+  filter(gene_id %in% color_genes) %>%
+  select(gene_id, gene_color, mean_log2FC) %>%
+  pivot_wider(names_from = gene_color, values_from = mean_log2FC) %>%
+  column_to_rownames("gene_id") %>%
+  as.matrix()
+
+color_mat[is.na(color_mat)] <- 0
+
+color_row_order <- color_gene_summary %>%
+  filter(gene_id %in% color_genes) %>%
+  arrange(desc(max_abs_log2FC)) %>%
+  pull(gene_id)
+
+color_mat <- color_mat[color_row_order, , drop = FALSE]
+
+png(
+  file.path(output_dir, "gene_heatmap_color_global_top25_up_top25_down.png"),
+  width = max(1400, 160 * ncol(color_mat)),
+  height = max(1000, 42 * nrow(color_mat)),
+  res = 200
+)
+
+draw(
+  Heatmap(
+    color_mat,
+    name = "mean log2FC",
+    col = log2fc_col_fun,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_row_dend = FALSE,
+    show_column_dend = FALSE,
+    show_row_names = TRUE,
+    row_names_gp = gpar(fontsize = 6),
+    column_names_rot = 45,
+    column_names_gp = gpar(fontsize = 8),
+    rect_gp = gpar(col = "grey80", lwd = 0.3),
+    width = unit(ncol(color_mat) * 8, "mm"),
+    height = unit(nrow(color_mat) * 4, "mm"),
+    heatmap_legend_param = list(
+      title = "mean log2FC",
       at = c(-5, 0, 5),
       labels = c("-5", "0", "5")
     )
@@ -285,7 +206,8 @@ dev.off()
 # =========================================================
 
 write_csv(gene_long, file.path(output_dir, "parsed_gene_log2FC_long.csv"))
-write_csv(gene_dataset_summary, file.path(output_dir, "gene_dataset_summary.csv"))
-write_csv(selected_genes_tbl, file.path(output_dir, "selected_global_top50_genes.csv"))
+write_csv(color_gene_summary, file.path(output_dir, "gene_color_summary.csv"))
+write_csv(selected_combo_genes_tbl, file.path(output_dir, "selected_combination_global_top50_genes.csv"))
+write_csv(selected_color_genes_tbl, file.path(output_dir, "selected_color_global_top50_genes.csv"))
 
-message("Done. Cohesive heatmap saved in: ", output_dir)
+message("Done. Separate combination and color heatmaps saved in: ", output_dir)
