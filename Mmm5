@@ -1,0 +1,643 @@
+# =========================================================
+# MULTI-PLOT GO SUMMARY FIGURES
+# One plot generated PER dataset combination
+#
+# Features:
+# - Supports MANY datasets
+# - Skips blank/missing files automatically
+# - Generates separate PNG/PDF for each comparison+direction
+# - TSV facet support
+# - GO grouped by shared gene count then log2FE
+# - Gene count shown as BLACK BAR
+# - log2FE shown as colored bar
+# - Top genes:
+#     unique = bold black
+#     shared = dark gray
+# - Color scale:
+#     yellow -> violet -> orange
+# =========================================================
+
+library(tidyverse)
+library(ggtext)
+library(scales)
+
+# =========================================================
+# USER SETTINGS
+# =========================================================
+
+datasets <- tribble(
+  ~comparison,    ~direction, ~go_file,               ~gene_file,
+
+  # ---- SET 1 ----
+  "comparison_1", "up",       "comp1_up_GO.csv",      "comp1_up_genes.csv",
+  "comparison_1", "down",     "",                     "",
+
+  "comparison_2", "up",       "comp2_up_GO.csv",      "comp2_up_genes.csv",
+  "comparison_2", "down",     "comp2_down_GO.csv",    "comp2_down_genes.csv",
+
+  "comparison_3", "up",       "",                     "",
+  "comparison_3", "down",     "comp3_down_GO.csv",    "comp3_down_genes.csv",
+
+  # ---- OPTIONAL SECOND SET ----
+  "comparison_4", "up",       "",                     "",
+  "comparison_4", "down",     "",                     "",
+
+  "comparison_5", "up",       "",                     "",
+  "comparison_5", "down",     "",                     "",
+
+  "comparison_6", "up",       "",                     "",
+  "comparison_6", "down",     "",                     "",
+
+  "comparison_7", "up",       "",                     "",
+  "comparison_7", "down",     "",                     "",
+
+  "comparison_8", "up",       "",                     "",
+  "comparison_8", "down",     "",                     "",
+
+  "comparison_9", "up",       "",                     "",
+  "comparison_9", "down",     "",                     "",
+
+  "comparison_10", "up",      "",                     "",
+  "comparison_10", "down",    "",                     "",
+
+  "comparison_11", "up",      "",                     "",
+  "comparison_11", "down",    "",                     ""
+)
+
+facet_file <- "GO_facets.tsv"
+
+output_dir <- "heatmap_outputs"
+dir.create(output_dir, showWarnings = FALSE)
+
+GO_LOG2FE_THRESHOLD <- 3
+SIGN_GO_BY_DIRECTION <- TRUE
+
+TOP_N_GENES <- 5
+
+# =========================================================
+# COLUMN SETTINGS
+# =========================================================
+
+GO_TERM_COL <- 2
+GO_GENES_COL <- 11
+GO_LOG2FE_COL <- 12
+
+GENE_ID_COL <- 1
+GENE_LOG2FC_COL <- 2
+
+FACET_GO_TERM_COL <- 1
+FACET_GROUP_COL <- 2
+
+# =========================================================
+# LOAD FACETS
+# =========================================================
+
+facet_df <- read_tsv(
+  facet_file,
+  show_col_types = FALSE
+) %>%
+  select(
+    go_term = all_of(FACET_GO_TERM_COL),
+    facet = all_of(FACET_GROUP_COL)
+  ) %>%
+  mutate(
+    go_term = as.character(go_term),
+    facet = as.character(facet)
+  )
+
+# =========================================================
+# MAIN LOOP
+# =========================================================
+
+for (i in seq_len(nrow(datasets))) {
+
+  comparison <- datasets$comparison[i]
+  direction <- datasets$direction[i]
+
+  go_file <- datasets$go_file[i]
+  gene_file <- datasets$gene_file[i]
+
+  # =======================================================
+  # SKIP EMPTY
+  # =======================================================
+
+  if (
+    is.na(go_file) ||
+    is.na(gene_file) ||
+    go_file == "" ||
+    gene_file == ""
+  ) {
+
+    message(
+      "Skipping ",
+      comparison,
+      " ",
+      direction,
+      ": missing file."
+    )
+
+    next
+  }
+
+  # =======================================================
+  # SKIP MISSING
+  # =======================================================
+
+  if (
+    !file.exists(go_file) ||
+    !file.exists(gene_file)
+  ) {
+
+    message(
+      "Skipping ",
+      comparison,
+      " ",
+      direction,
+      ": file not found."
+    )
+
+    next
+  }
+
+  dataset_name <- paste(comparison, direction, sep = "_")
+
+  message("Processing ", dataset_name)
+
+  # =======================================================
+  # LOAD FILES
+  # =======================================================
+
+  go_df <- read_csv(go_file, show_col_types = FALSE)
+
+  gene_df <- read_csv(gene_file, show_col_types = FALSE)
+
+  # =======================================================
+  # GENE TABLE
+  # =======================================================
+
+  gene_long <- gene_df %>%
+    select(
+      gene_id = all_of(GENE_ID_COL),
+      gene_log2FC = all_of(GENE_LOG2FC_COL)
+    ) %>%
+    mutate(
+      gene_id = as.character(gene_id),
+      gene_log2FC = as.numeric(gene_log2FC)
+    )
+
+  # =======================================================
+  # GO TABLE
+  # =======================================================
+
+  go_long <- go_df %>%
+    transmute(
+      go_term = as.character(
+        .data[[names(go_df)[GO_TERM_COL]]]
+      ),
+
+      gene_list = as.character(
+        .data[[names(go_df)[GO_GENES_COL]]]
+      ),
+
+      log2FE = as.numeric(
+        .data[[names(go_df)[GO_LOG2FE_COL]]]
+      )
+    ) %>%
+    mutate(
+      log2FE = case_when(
+        SIGN_GO_BY_DIRECTION & direction == "down" ~ -abs(log2FE),
+        SIGN_GO_BY_DIRECTION & direction == "up" ~ abs(log2FE),
+        TRUE ~ log2FE
+      )
+    ) %>%
+    filter(
+      !is.na(log2FE),
+      is.finite(log2FE),
+      abs(log2FE) >= GO_LOG2FE_THRESHOLD
+    )
+
+  # =======================================================
+  # GO-GENE LINKS
+  # =======================================================
+
+  go_gene_long <- go_long %>%
+    separate_rows(gene_list, sep = ",") %>%
+    mutate(
+      gene_id = str_trim(gene_list)
+    ) %>%
+    filter(
+      !is.na(gene_id),
+      gene_id != "",
+      tolower(gene_id) != "nan"
+    ) %>%
+    select(go_term, gene_id)
+
+  # =======================================================
+  # ADD FACETS
+  # =======================================================
+
+  go_long <- go_long %>%
+    left_join(facet_df, by = "go_term") %>%
+    mutate(
+      facet = replace_na(facet, "Unannotated")
+    )
+
+  # =======================================================
+  # MERGE
+  # =======================================================
+
+  merged <- go_gene_long %>%
+    left_join(
+      gene_long,
+      by = "gene_id"
+    ) %>%
+    left_join(
+      go_long %>%
+        select(go_term, log2FE),
+      by = "go_term"
+    )
+
+  # =======================================================
+  # GENE UNIQUENESS
+  # =======================================================
+
+  gene_uniqueness <- go_gene_long %>%
+    distinct(go_term, gene_id) %>%
+    count(gene_id, name = "go_occurrences")
+
+  # =======================================================
+  # TOP GENES
+  # =======================================================
+
+  top_gene_labels <- merged %>%
+    filter(!is.na(gene_log2FC)) %>%
+    group_by(go_term) %>%
+    arrange(desc(gene_log2FC), .by_group = TRUE) %>%
+    slice_head(n = TOP_N_GENES) %>%
+    ungroup() %>%
+    left_join(
+      gene_uniqueness,
+      by = "gene_id"
+    ) %>%
+    mutate(
+
+      gene_label = ifelse(
+
+        go_occurrences == 1,
+
+        paste0(
+          "<b><span style='color:#000000;'>",
+          gene_id,
+          "</span></b>"
+        ),
+
+        paste0(
+          "<span style='color:#555555;'>",
+          gene_id,
+          "</span>"
+        )
+      )
+    ) %>%
+    group_by(go_term) %>%
+    summarise(
+      top_genes = paste(
+        gene_label,
+        collapse = ", "
+      ),
+      .groups = "drop"
+    )
+
+  # =======================================================
+  # GENE COUNTS
+  # =======================================================
+
+  gene_counts <- go_gene_long %>%
+    group_by(go_term) %>%
+    summarise(
+      gene_count = n_distinct(gene_id),
+      .groups = "drop"
+    )
+
+  # =======================================================
+  # PLOT DATA
+  # =======================================================
+
+  plot_data <- go_long %>%
+    left_join(
+      gene_counts,
+      by = "go_term"
+    ) %>%
+    left_join(
+      top_gene_labels,
+      by = "go_term"
+    ) %>%
+    mutate(
+      gene_count = replace_na(gene_count, 0),
+      top_genes = replace_na(top_genes, ""),
+      abs_log2FE = abs(log2FE)
+    ) %>%
+
+    # =====================================================
+    # NEW SORTING:
+    # 1. shared gene count
+    # 2. log2FE
+    # =====================================================
+
+    arrange(
+      desc(gene_count),
+      desc(abs_log2FE)
+    ) %>%
+
+    mutate(
+      go_order = row_number(),
+
+      go_term_wrapped = str_wrap(
+        go_term,
+        width = 42
+      ),
+
+      go_term_factor = factor(
+        paste(
+          go_order,
+          go_term_wrapped,
+          sep = "___"
+        ),
+        levels = rev(
+          paste(
+            go_order,
+            go_term_wrapped,
+            sep = "___"
+          )
+        )
+      )
+    )
+
+  # =======================================================
+  # X POSITIONS
+  # =======================================================
+
+  max_log2FE <- max(
+    plot_data$abs_log2FE,
+    na.rm = TRUE
+  )
+
+  max_gene_count <- max(
+    plot_data$gene_count,
+    na.rm = TRUE
+  )
+
+  plot_data <- plot_data %>%
+    mutate(
+
+      # LOG2FE BAR
+      log2fe_x_start = 1.35,
+
+      log2fe_x_end = 1.35 + rescale(
+        abs_log2FE,
+        to = c(0.1, 1.1),
+        from = c(0, max_log2FE)
+      ),
+
+      # GENE COUNT BAR
+      gene_x_start = 2.9,
+
+      gene_x_end = 2.9 + rescale(
+        gene_count,
+        to = c(0.08, 0.8),
+        from = c(0, max_gene_count)
+      )
+    )
+
+  # =======================================================
+  # PLOT
+  # =======================================================
+
+  p <- ggplot(
+    plot_data,
+    aes(y = go_term_factor)
+  ) +
+
+    # =====================================================
+    # GO TERM
+    # =====================================================
+
+    geom_text(
+      aes(
+        x = 1.0,
+        label = go_term_wrapped
+      ),
+      hjust = 1,
+      size = 2.7,
+      lineheight = 0.8
+    ) +
+
+    # =====================================================
+    # LOG2FE BAR
+    # =====================================================
+
+    geom_segment(
+      aes(
+        x = log2fe_x_start,
+        xend = log2fe_x_end,
+        yend = go_term_factor,
+        color = abs_log2FE
+      ),
+      linewidth = 6,
+      lineend = "round"
+    ) +
+
+    # =====================================================
+    # GENE COUNT BAR
+    # =====================================================
+
+    geom_segment(
+      aes(
+        x = gene_x_start,
+        xend = gene_x_end,
+        yend = go_term_factor
+      ),
+      linewidth = 5,
+      lineend = "round",
+      color = "black"
+    ) +
+
+    # =====================================================
+    # TOP GENES
+    # =====================================================
+
+    ggtext::geom_richtext(
+      aes(
+        x = 4.2,
+        label = top_genes
+      ),
+      hjust = 0,
+      fill = NA,
+      label.color = NA,
+      size = 2.55,
+      lineheight = 0.95
+    ) +
+
+    # =====================================================
+    # COLOR SCALE
+    # =====================================================
+
+    scale_color_gradientn(
+      colors = c(
+        "yellow",
+        "violet",
+        "orange"
+      ),
+      name = "log2FE"
+    ) +
+
+    # =====================================================
+    # AXES
+    # =====================================================
+
+    scale_x_continuous(
+      limits = c(0.05, 6.3),
+
+      breaks = c(
+        0.6,
+        1.9,
+        3.2,
+        4.7
+      ),
+
+      labels = c(
+        "GO term",
+        "log2FE",
+        "Gene count",
+        "Top 5 genes"
+      )
+    ) +
+
+    labs(
+      title = dataset_name,
+      x = NULL,
+      y = NULL
+    ) +
+
+    # =====================================================
+    # THEME
+    # =====================================================
+
+    theme_minimal(base_size = 11) +
+
+    theme(
+
+      panel.grid = element_blank(),
+
+      panel.border = element_rect(
+        color = "grey35",
+        fill = NA,
+        linewidth = 0.7
+      ),
+
+      axis.text.y = element_blank(),
+
+      axis.ticks = element_blank(),
+
+      axis.text.x = element_text(
+        face = "bold",
+        size = 10,
+        color = "black"
+      ),
+
+      plot.title = element_text(
+        face = "bold",
+        size = 13,
+        hjust = 0.5
+      ),
+
+      legend.position = "right",
+
+      legend.title = element_text(
+        face = "bold"
+      ),
+
+      plot.margin = margin(
+        10,
+        20,
+        10,
+        10
+      )
+    )
+
+  # =======================================================
+  # SAVE PNG
+  # =======================================================
+
+  png(
+    file.path(
+      output_dir,
+      paste0(
+        dataset_name,
+        "_GO_summary.png"
+      )
+    ),
+
+    width = 3200,
+
+    height = max(
+      1400,
+      50 * nrow(plot_data)
+    ),
+
+    res = 220
+  )
+
+  print(p)
+
+  dev.off()
+
+  # =======================================================
+  # SAVE PDF
+  # =======================================================
+
+  pdf(
+    file.path(
+      output_dir,
+      paste0(
+        dataset_name,
+        "_GO_summary.pdf"
+      )
+    ),
+
+    width = 16,
+
+    height = max(
+      7,
+      0.28 * nrow(plot_data)
+    )
+  )
+
+  print(p)
+
+  dev.off()
+
+  # =======================================================
+  # SAVE DATA TABLE
+  # =======================================================
+
+  write_csv(
+    plot_data,
+
+    file.path(
+      output_dir,
+      paste0(
+        dataset_name,
+        "_plot_data.csv"
+      )
+    )
+  )
+
+  message(
+    "Finished ",
+    dataset_name
+  )
+}
+
+message(
+  "All plots complete."
+)
