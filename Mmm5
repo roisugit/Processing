@@ -1,3 +1,44 @@
+datasets <- tribble(
+  ~plot_name,              ~go_file,                     ~gene_file,
+
+  # =====================================================
+  # ORIGINAL 6 DATASETS
+  # =====================================================
+
+  "comparison_1_up",       "comp1_up_GO.csv",           "comp1_up_genes.csv",
+  "comparison_1_down",     "comp1_down_GO.csv",         "comp1_down_genes.csv",
+
+  "comparison_2_up",       "comp2_up_GO.csv",           "comp2_up_genes.csv",
+  "comparison_2_down",     "comp2_down_GO.csv",         "comp2_down_genes.csv",
+
+  "comparison_3_up",       "comp3_up_GO.csv",           "comp3_up_genes.csv",
+  "comparison_3_down",     "comp3_down_GO.csv",         "comp3_down_genes.csv",
+
+  # =====================================================
+  # ADDITIONAL GO FILES
+  # These reuse one of the ORIGINAL 6 gene files
+  # =====================================================
+
+  "extra_GO_1",            "extra_GO_1.csv",            "comp1_up_genes.csv",
+  "extra_GO_2",            "extra_GO_2.csv",            "comp1_down_genes.csv",
+
+  "extra_GO_3",            "extra_GO_3.csv",            "comp2_up_genes.csv",
+  "extra_GO_4",            "extra_GO_4.csv",            "comp2_down_genes.csv",
+
+  "extra_GO_5",            "extra_GO_5.csv",            "comp3_up_genes.csv",
+  "extra_GO_6",            "extra_GO_6.csv",            "comp3_down_genes.csv",
+
+  "extra_GO_7",            "extra_GO_7.csv",            "comp1_up_genes.csv",
+  "extra_GO_8",            "extra_GO_8.csv",            "comp1_down_genes.csv",
+
+  "extra_GO_9",            "extra_GO_9.csv",            "comp2_up_genes.csv",
+  "extra_GO_10",           "extra_GO_10.csv",           "comp2_down_genes.csv",
+
+  "extra_GO_11",           "extra_GO_11.csv",           "comp3_down_genes.csv"
+)
+
+
+
 # =========================================================
 # MULTI-PLOT GO SUMMARY FIGURES
 #
