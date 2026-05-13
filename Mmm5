@@ -1,20 +1,23 @@
 # =========================================================
 # MULTI-PLOT GO SUMMARY FIGURES
-# One plot generated PER dataset combination
 #
 # Features:
-# - Supports MANY datasets
-# - Skips blank/missing files automatically
-# - Generates separate PNG/PDF for each comparison+direction
+# - 11 independent GO inputs
+# - Each GO input can reuse ANY of the original
+#   6 gene log2FC files
+# - Blank files skipped automatically
+# - One PNG/PDF generated per GO file
 # - TSV facet support
-# - GO grouped by shared gene count then log2FE
+# - GO grouped by:
+#       1. gene count
+#       2. log2FE
 # - Gene count shown as BLACK BAR
 # - log2FE shown as colored bar
 # - Top genes:
-#     unique = bold black
-#     shared = dark gray
+#       unique = bold black
+#       shared = dark gray
 # - Color scale:
-#     yellow -> violet -> orange
+#       yellow -> violet -> orange
 # =========================================================
 
 library(tidyverse)
@@ -26,42 +29,39 @@ library(scales)
 # =========================================================
 
 datasets <- tribble(
-  ~comparison,    ~direction, ~go_file,               ~gene_file,
+  ~plot_name,          ~go_file,                ~gene_file,
 
-  # ---- SET 1 ----
-  "comparison_1", "up",       "comp1_up_GO.csv",      "comp1_up_genes.csv",
-  "comparison_1", "down",     "",                     "",
+  # =====================================================
+  # ORIGINAL 6 GENE SOURCES
+  # =====================================================
 
-  "comparison_2", "up",       "comp2_up_GO.csv",      "comp2_up_genes.csv",
-  "comparison_2", "down",     "comp2_down_GO.csv",    "comp2_down_genes.csv",
+  # comparison_1_up genes
+  "GO_set_1",          "GO_set_1.csv",          "comp1_up_genes.csv",
+  "GO_set_2",          "GO_set_2.csv",          "comp1_up_genes.csv",
 
-  "comparison_3", "up",       "",                     "",
-  "comparison_3", "down",     "comp3_down_GO.csv",    "comp3_down_genes.csv",
+  # comparison_1_down genes
+  "GO_set_3",          "GO_set_3.csv",          "comp1_down_genes.csv",
 
-  # ---- OPTIONAL SECOND SET ----
-  "comparison_4", "up",       "",                     "",
-  "comparison_4", "down",     "",                     "",
+  # comparison_2_up genes
+  "GO_set_4",          "GO_set_4.csv",          "comp2_up_genes.csv",
+  "GO_set_5",          "GO_set_5.csv",          "comp2_up_genes.csv",
 
-  "comparison_5", "up",       "",                     "",
-  "comparison_5", "down",     "",                     "",
+  # comparison_2_down genes
+  "GO_set_6",          "GO_set_6.csv",          "comp2_down_genes.csv",
 
-  "comparison_6", "up",       "",                     "",
-  "comparison_6", "down",     "",                     "",
+  # comparison_3_up genes
+  "GO_set_7",          "",                      "",
 
-  "comparison_7", "up",       "",                     "",
-  "comparison_7", "down",     "",                     "",
+  # comparison_3_down genes
+  "GO_set_8",          "GO_set_8.csv",          "comp3_down_genes.csv",
 
-  "comparison_8", "up",       "",                     "",
-  "comparison_8", "down",     "",                     "",
+  # =====================================================
+  # ADDITIONAL GO INPUTS
+  # =====================================================
 
-  "comparison_9", "up",       "",                     "",
-  "comparison_9", "down",     "",                     "",
-
-  "comparison_10", "up",      "",                     "",
-  "comparison_10", "down",    "",                     "",
-
-  "comparison_11", "up",      "",                     "",
-  "comparison_11", "down",    "",                     ""
+  "GO_set_9",          "GO_set_9.csv",          "comp1_up_genes.csv",
+  "GO_set_10",         "GO_set_10.csv",         "comp2_down_genes.csv",
+  "GO_set_11",         "GO_set_11.csv",         "comp3_down_genes.csv"
 )
 
 facet_file <- "GO_facets.tsv"
@@ -70,7 +70,6 @@ output_dir <- "heatmap_outputs"
 dir.create(output_dir, showWarnings = FALSE)
 
 GO_LOG2FE_THRESHOLD <- 3
-SIGN_GO_BY_DIRECTION <- TRUE
 
 TOP_N_GENES <- 5
 
@@ -111,8 +110,7 @@ facet_df <- read_tsv(
 
 for (i in seq_len(nrow(datasets))) {
 
-  comparison <- datasets$comparison[i]
-  direction <- datasets$direction[i]
+  plot_name <- datasets$plot_name[i]
 
   go_file <- datasets$go_file[i]
   gene_file <- datasets$gene_file[i]
@@ -130,9 +128,7 @@ for (i in seq_len(nrow(datasets))) {
 
     message(
       "Skipping ",
-      comparison,
-      " ",
-      direction,
+      plot_name,
       ": missing file."
     )
 
@@ -150,16 +146,14 @@ for (i in seq_len(nrow(datasets))) {
 
     message(
       "Skipping ",
-      comparison,
-      " ",
-      direction,
+      plot_name,
       ": file not found."
     )
 
     next
   }
 
-  dataset_name <- paste(comparison, direction, sep = "_")
+  dataset_name <- plot_name
 
   message("Processing ", dataset_name)
 
@@ -167,9 +161,15 @@ for (i in seq_len(nrow(datasets))) {
   # LOAD FILES
   # =======================================================
 
-  go_df <- read_csv(go_file, show_col_types = FALSE)
+  go_df <- read_csv(
+    go_file,
+    show_col_types = FALSE
+  )
 
-  gene_df <- read_csv(gene_file, show_col_types = FALSE)
+  gene_df <- read_csv(
+    gene_file,
+    show_col_types = FALSE
+  )
 
   # =======================================================
   # GENE TABLE
@@ -191,6 +191,7 @@ for (i in seq_len(nrow(datasets))) {
 
   go_long <- go_df %>%
     transmute(
+
       go_term = as.character(
         .data[[names(go_df)[GO_TERM_COL]]]
       ),
@@ -201,13 +202,6 @@ for (i in seq_len(nrow(datasets))) {
 
       log2FE = as.numeric(
         .data[[names(go_df)[GO_LOG2FE_COL]]]
-      )
-    ) %>%
-    mutate(
-      log2FE = case_when(
-        SIGN_GO_BY_DIRECTION & direction == "down" ~ -abs(log2FE),
-        SIGN_GO_BY_DIRECTION & direction == "up" ~ abs(log2FE),
-        TRUE ~ log2FE
       )
     ) %>%
     filter(
@@ -221,7 +215,10 @@ for (i in seq_len(nrow(datasets))) {
   # =======================================================
 
   go_gene_long <- go_long %>%
-    separate_rows(gene_list, sep = ",") %>%
+    separate_rows(
+      gene_list,
+      sep = ","
+    ) %>%
     mutate(
       gene_id = str_trim(gene_list)
     ) %>%
@@ -230,16 +227,25 @@ for (i in seq_len(nrow(datasets))) {
       gene_id != "",
       tolower(gene_id) != "nan"
     ) %>%
-    select(go_term, gene_id)
+    select(
+      go_term,
+      gene_id
+    )
 
   # =======================================================
   # ADD FACETS
   # =======================================================
 
   go_long <- go_long %>%
-    left_join(facet_df, by = "go_term") %>%
+    left_join(
+      facet_df,
+      by = "go_term"
+    ) %>%
     mutate(
-      facet = replace_na(facet, "Unannotated")
+      facet = replace_na(
+        facet,
+        "Unannotated"
+      )
     )
 
   # =======================================================
@@ -263,7 +269,10 @@ for (i in seq_len(nrow(datasets))) {
 
   gene_uniqueness <- go_gene_long %>%
     distinct(go_term, gene_id) %>%
-    count(gene_id, name = "go_occurrences")
+    count(
+      gene_id,
+      name = "go_occurrences"
+    )
 
   # =======================================================
   # TOP GENES
@@ -272,8 +281,13 @@ for (i in seq_len(nrow(datasets))) {
   top_gene_labels <- merged %>%
     filter(!is.na(gene_log2FC)) %>%
     group_by(go_term) %>%
-    arrange(desc(gene_log2FC), .by_group = TRUE) %>%
-    slice_head(n = TOP_N_GENES) %>%
+    arrange(
+      desc(gene_log2FC),
+      .by_group = TRUE
+    ) %>%
+    slice_head(
+      n = TOP_N_GENES
+    ) %>%
     ungroup() %>%
     left_join(
       gene_uniqueness,
@@ -332,15 +346,21 @@ for (i in seq_len(nrow(datasets))) {
       by = "go_term"
     ) %>%
     mutate(
-      gene_count = replace_na(gene_count, 0),
-      top_genes = replace_na(top_genes, ""),
+      gene_count = replace_na(
+        gene_count,
+        0
+      ),
+
+      top_genes = replace_na(
+        top_genes,
+        ""
+      ),
+
       abs_log2FE = abs(log2FE)
     ) %>%
 
     # =====================================================
-    # NEW SORTING:
-    # 1. shared gene count
-    # 2. log2FE
+    # SORTING
     # =====================================================
 
     arrange(
@@ -349,6 +369,7 @@ for (i in seq_len(nrow(datasets))) {
     ) %>%
 
     mutate(
+
       go_order = row_number(),
 
       go_term_wrapped = str_wrap(
@@ -362,6 +383,7 @@ for (i in seq_len(nrow(datasets))) {
           go_term_wrapped,
           sep = "___"
         ),
+
         levels = rev(
           paste(
             go_order,
@@ -389,7 +411,10 @@ for (i in seq_len(nrow(datasets))) {
   plot_data <- plot_data %>%
     mutate(
 
+      # ===================================================
       # LOG2FE BAR
+      # ===================================================
+
       log2fe_x_start = 1.35,
 
       log2fe_x_end = 1.35 + rescale(
@@ -398,7 +423,10 @@ for (i in seq_len(nrow(datasets))) {
         from = c(0, max_log2FE)
       ),
 
+      # ===================================================
       # GENE COUNT BAR
+      # ===================================================
+
       gene_x_start = 2.9,
 
       gene_x_end = 2.9 + rescale(
@@ -522,7 +550,9 @@ for (i in seq_len(nrow(datasets))) {
     # THEME
     # =====================================================
 
-    theme_minimal(base_size = 11) +
+    theme_minimal(
+      base_size = 11
+    ) +
 
     theme(
 
@@ -617,7 +647,7 @@ for (i in seq_len(nrow(datasets))) {
   dev.off()
 
   # =======================================================
-  # SAVE DATA TABLE
+  # SAVE TABLE
   # =======================================================
 
   write_csv(
