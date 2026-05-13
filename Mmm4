@@ -21,7 +21,8 @@ datasets <- tribble(
   "comparison_3", "down",     "comp3_down_GO.csv",   "comp3_down_genes.csv"
 )
 
-facet_file <- "GO_facets.csv"
+# TSV facet file
+facet_file <- "GO_facets.tsv"
 
 output_dir <- "heatmap_outputs"
 dir.create(output_dir, showWarnings = FALSE)
@@ -49,7 +50,10 @@ FACET_GROUP_COL <- 2
 # LOAD FACETS
 # =========================================================
 
-facet_df <- read_csv(facet_file, show_col_types = FALSE) %>%
+facet_df <- read_tsv(
+  facet_file,
+  show_col_types = FALSE
+) %>%
   select(
     go_term = all_of(FACET_GO_TERM_COL),
     facet = all_of(FACET_GROUP_COL)
@@ -354,9 +358,10 @@ single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
     range = c(2, 7)
   ) +
 
+  # ADJUSTED COLUMN HEADER POSITIONS
   scale_x_continuous(
     limits = c(0.05, 5.25),
-    breaks = c(1.05, 1.8, 2.85, 3.65),
+    breaks = c(0.6, 1.9, 2.95, 4.25),
     labels = c(
       "GO term",
       "GO log2FC",
