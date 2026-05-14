@@ -229,6 +229,12 @@ top_gene_labels <- merged %>%
   left_join(gene_uniqueness, by = "gene_id") %>%
   mutate(
 
+    gene_color = ifelse(
+      is.na(hex_color),
+      "#000000",
+      hex_color
+    ),
+
     underline_style = ifelse(
       !is.na(hex_color),
       paste0(
@@ -241,20 +247,26 @@ top_gene_labels <- merged %>%
 
     gene_label = case_when(
 
+      # UNIQUE GENES
       go_occurrences == 1 ~
         paste0(
           "<b><i><span style='",
           underline_style,
-          " color:#000000;'>",
+          " color:",
+          gene_color,
+          ";'>",
           gene_id,
           "</span></i></b>"
         ),
 
+      # NON-UNIQUE GENES
       TRUE ~
         paste0(
           "<i><span style='",
           underline_style,
-          " color:#000000;'>",
+          " color:",
+          gene_color,
+          ";'>",
           gene_id,
           "</span></i>"
         )
@@ -290,7 +302,7 @@ plot_data <- go_long %>%
     comparison_label = str_replace(
       comparison,
       "comparison_",
-      "C"
+      "comm"
     )
   ) %>%
   arrange(
@@ -330,13 +342,8 @@ plot_data <- go_long %>%
 
 plot_data <- plot_data %>%
   mutate(
-    y_pos = seq_len(n())
+    y_pos = rev(seq_len(n()))
   )
-
-plot_data$y_factor <- factor(
-  plot_data$go_term_factor,
-  levels = plot_data$go_term_factor
-)
 
 # =========================================================
 # BAR POSITIONS
@@ -380,7 +387,6 @@ dot_data <- merged %>%
         comparison,
         facet,
         go_term,
-        go_term_factor,
         y_pos
       ),
     by = c(
@@ -464,17 +470,17 @@ single_plot <- ggplot(
     inherit.aes = FALSE
   ) +
 
-  # rotated comparison labels
+  # comparison labels
   geom_text(
     data = comparison_brackets,
     aes(
-      x = 0.03,
+      x = 0.02,
       y = ymid,
-      label = str_replace(comparison_label, "C", "")
+      label = comparison_label
     ),
-    angle = 90,
     fontface = "bold",
-    size = 2.8,
+    hjust = 0,
+    size = 2.4,
     inherit.aes = FALSE
   ) +
 
@@ -486,8 +492,8 @@ single_plot <- ggplot(
       label = go_term_wrapped
     ),
     hjust = 1,
-    size = 2.45,
-    lineheight = 0.72
+    size = 2.5,
+    lineheight = 0.78
   ) +
 
   # log2FE bar
@@ -517,25 +523,17 @@ single_plot <- ggplot(
     aes(
       x = dot_x,
       y = y_pos,
-      size = color_gene_count,
-      fill = hex_color
+      size = color_gene_count
     ),
-    shape = 21,
-    color = NA,
+    shape = 16,
+    color = dot_data$hex_color,
     stroke = 0,
     alpha = 0.98
   ) +
 
-  scale_fill_identity(
-    name = "Gene groups",
-    guide = "legend",
-    labels = unique(dot_data$hex_color),
-    breaks = unique(dot_data$hex_color)
-  ) +
-
   scale_size_continuous(
     name = "Genes per group",
-    range = c(1.8, 5.8)
+    range = c(2.2, 6.2)
   ) +
 
   # top genes
@@ -548,8 +546,8 @@ single_plot <- ggplot(
     hjust = 0,
     fill = NA,
     label.color = NA,
-    size = 2.35,
-    lineheight = 0.9
+    size = 2.45,
+    lineheight = 1.0
   ) +
 
   facet_grid(
@@ -561,14 +559,15 @@ single_plot <- ggplot(
 
   scale_y_continuous(
     breaks = plot_data$y_pos,
-    labels = rep("", nrow(plot_data))
+    labels = rep("", nrow(plot_data)),
+    expand = expansion(mult = c(0.02, 0.02))
   ) +
 
   scale_x_continuous(
     limits = c(0.0, 3.7),
 
     breaks = c(
-      0.06,
+      0.10,
       1.22,
       1.95,
       2.85
@@ -579,12 +578,18 @@ single_plot <- ggplot(
       "log2 Fold Enrichment",
       "Groups",
       "Top genes"
-    )
+    ),
+
+    expand = expansion(mult = c(0.01, 0.01))
   ) +
 
   labs(
     x = NULL,
     y = NULL
+  ) +
+
+  coord_cartesian(
+    clip = "off"
   ) +
 
   theme_minimal(base_size = 10) +
@@ -610,9 +615,9 @@ single_plot <- ggplot(
     strip.text.y.left = element_text(
       angle = 90,
       face = "bold",
-      size = 9.5,
+      size = 10,
       color = "black",
-      margin = margin(2, 2, 2, 2)
+      margin = margin(3, 3, 3, 3)
     ),
 
     axis.text.y = element_blank(),
@@ -625,11 +630,13 @@ single_plot <- ggplot(
     ),
 
     plot.margin = margin(
-      5,
       8,
-      5,
-      5
+      10,
+      8,
+      35
     ),
+
+    panel.spacing.y = unit(0.7, "lines"),
 
     legend.position = "right",
 
@@ -652,10 +659,10 @@ png(
     output_dir,
     "single_GO_summary_plot_compact.png"
   ),
-  width = 3000,
+  width = 3200,
   height = max(
-    1600,
-    46 * nrow(plot_data)
+    2200,
+    65 * nrow(plot_data)
   ),
   res = 240
 )
@@ -673,10 +680,10 @@ pdf(
     output_dir,
     "single_GO_summary_plot_compact.pdf"
   ),
-  width = 14,
+  width = 15,
   height = max(
-    7,
-    0.24 * nrow(plot_data)
+    9,
+    0.34 * nrow(plot_data)
   )
 )
 
