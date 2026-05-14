@@ -229,38 +229,34 @@ top_gene_labels <- merged %>%
   left_join(gene_uniqueness, by = "gene_id") %>%
   mutate(
 
+    underline_style = ifelse(
+      !is.na(hex_color),
+      paste0(
+        "border-bottom:2px solid ",
+        hex_color,
+        "; padding-bottom:1px;"
+      ),
+      ""
+    ),
+
     gene_label = case_when(
 
-      # colored genes
-      !is.na(hex_color) & go_occurrences == 1 ~
-        paste0(
-          "<b><i><span style='color:",
-          hex_color,
-          "; text-decoration:underline;'>",
-          gene_id,
-          "</span></i></b>"
-        ),
-
-      !is.na(hex_color) ~
-        paste0(
-          "<i><span style='color:",
-          hex_color,
-          "; text-decoration:underline;'>",
-          gene_id,
-          "</span></i>"
-        ),
-
-      # non-colored genes
+      # UNIQUE GENES
       go_occurrences == 1 ~
         paste0(
-          "<b><i><span style='color:#000000;'>",
+          "<b><i><span style='",
+          underline_style,
+          " color:#000000;'>",
           gene_id,
           "</span></i></b>"
         ),
 
+      # NON-UNIQUE GENES
       TRUE ~
         paste0(
-          "<i><span style='color:#555555;'>",
+          "<i><span style='",
+          underline_style,
+          " color:#000000;'>",
           gene_id,
           "</span></i>"
         )
@@ -385,10 +381,26 @@ dot_data <- merged %>%
   mutate(
     dot_index = row_number(),
 
-    # much tighter spacing
-    dot_x = 1.92 + (dot_index - 1) * 0.045
+    # tight spacing
+    dot_x = 1.82 + (dot_index - 1) * 0.032
   ) %>%
   ungroup()
+
+# =========================================================
+# COMPARISON BRACKET LABELS
+# =========================================================
+
+comparison_brackets <- plot_data %>%
+  group_by(
+    facet,
+    comparison_label
+  ) %>%
+  summarise(
+    ymin = min(as.numeric(go_term_factor)),
+    ymax = max(as.numeric(go_term_factor)),
+    ymid = mean(c(ymin, ymax)),
+    .groups = "drop"
+  )
 
 # =========================================================
 # SINGLE PLOT
@@ -399,16 +411,55 @@ single_plot <- ggplot(
   aes(y = go_term_factor)
 ) +
 
-  # comparison label
-  geom_text(
+  # comparison brackets
+  geom_segment(
+    data = comparison_brackets,
     aes(
-      x = 0.12,
-      label = comparison_label
+      x = 0.08,
+      xend = 0.08,
+      y = ymin,
+      yend = ymax
     ),
-    hjust = 0,
-    size = 2.4,
+    linewidth = 0.7,
+    inherit.aes = FALSE
+  ) +
+
+  geom_segment(
+    data = comparison_brackets,
+    aes(
+      x = 0.08,
+      xend = 0.12,
+      y = ymin,
+      yend = ymin
+    ),
+    linewidth = 0.7,
+    inherit.aes = FALSE
+  ) +
+
+  geom_segment(
+    data = comparison_brackets,
+    aes(
+      x = 0.08,
+      xend = 0.12,
+      y = ymax,
+      yend = ymax
+    ),
+    linewidth = 0.7,
+    inherit.aes = FALSE
+  ) +
+
+  # rotated comparison labels
+  geom_text(
+    data = comparison_brackets,
+    aes(
+      x = 0.03,
+      y = ymid,
+      label = str_replace(comparison_label, "C", "")
+    ),
+    angle = 90,
     fontface = "bold",
-    color = "black"
+    size = 2.8,
+    inherit.aes = FALSE
   ) +
 
   # GO term
@@ -452,6 +503,7 @@ single_plot <- ggplot(
       fill = hex_color
     ),
     shape = 21,
+    color = NA,
     stroke = 0,
     alpha = 0.98
   ) +
@@ -471,7 +523,7 @@ single_plot <- ggplot(
   # top genes
   ggtext::geom_richtext(
     aes(
-      x = 2.55,
+      x = 2.22,
       label = top_genes
     ),
     hjust = 0,
@@ -489,19 +541,19 @@ single_plot <- ggplot(
   ) +
 
   scale_x_continuous(
-    limits = c(0.02, 4.25),
+    limits = c(0.0, 3.7),
 
     breaks = c(
-      0.12,
-      1.35,
-      2.0,
-      3.15
+      0.06,
+      1.22,
+      1.95,
+      2.85
     ),
 
     labels = c(
-      "Comp",
+      "",
       "log2 Fold Enrichment",
-      "Gene groups",
+      "Groups",
       "Top genes"
     )
   ) +
