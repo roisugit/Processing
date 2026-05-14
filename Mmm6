@@ -1,6 +1,6 @@
 # =========================================================
 # Single polished GO summary plot
-# GO term | GO log2FE bar | gene-count bars | source folder | top genes
+# GO term | GO log2FE | Gene count | Top genes
 # =========================================================
 
 library(tidyverse)
@@ -31,6 +31,17 @@ GO_LOG2FE_THRESHOLD <- 3
 SIGN_GO_BY_DIRECTION <- TRUE
 
 TOP_N_GENES <- 5
+
+# =========================================================
+# DIRECTORY COLORS
+# =========================================================
+
+directory_colors <- c(
+  "folderA" = "#FDEDEC",
+  "folderB" = "#EBF5FB",
+  "folderC" = "#F4ECF7",
+  "unknown" = "#F2F3F4"
+)
 
 # =========================================================
 # COLUMN SETTINGS
@@ -91,6 +102,10 @@ for (i in seq_len(nrow(datasets))) {
   dataset_name <- paste(comparison, direction, sep = "_")
 
   source_folder <- basename(path_dir(gene_file))
+
+  if (source_folder == "") {
+    source_folder <- "unknown"
+  }
 
   message("Loading ", dataset_name)
 
@@ -253,16 +268,18 @@ plot_data <- go_long %>%
   mutate(
     gene_count = replace_na(gene_count, 0),
     top_genes = replace_na(top_genes, ""),
-    abs_go_log2FC = abs(go_log2FC)
+    abs_go_log2FC = abs(go_log2FC),
+
+    directory_fill = directory_colors[source_folder]
   ) %>%
 
   arrange(
     facet,
-    desc(abs_go_log2FC),
-    source_folder
+    source_folder,
+    desc(abs_go_log2FC)
   ) %>%
 
-  group_by(facet) %>%
+  group_by(facet, source_folder) %>%
   mutate(go_order = row_number()) %>%
   ungroup() %>%
 
@@ -273,17 +290,17 @@ plot_data <- go_long %>%
     go_term_factor = factor(
       paste(
         facet,
+        source_folder,
         go_order,
         go_term_wrapped,
-        source_folder,
         sep = "___"
       ),
       levels = rev(
         paste(
           facet,
+          source_folder,
           go_order,
           go_term_wrapped,
-          source_folder,
           sep = "___"
         )
       )
@@ -296,17 +313,21 @@ max_gene_count <- max(plot_data$gene_count, na.rm = TRUE)
 plot_data <- plot_data %>%
   mutate(
 
-    bar_x_start = 1.12,
+    # GO LOG2FE BARS
+    go_bar_start = 1.08,
 
-    bar_x_end = 1.12 + rescale(
+    go_bar_end = 1.08 + rescale(
       abs_go_log2FC,
-      to = c(0.04, 0.82),
+      to = c(0.05, 0.82),
       from = c(0, max_abs_go)
     ),
 
-    gene_bar_width = rescale(
+    # GENE COUNT BARS
+    gene_bar_start = 2.02,
+
+    gene_bar_end = 2.02 + rescale(
       gene_count,
-      to = c(0.04, 0.34),
+      to = c(0.05, 0.60),
       from = c(0, max_gene_count)
     )
   )
@@ -323,71 +344,63 @@ single_plot <- ggplot(
   # GO TERMS
   geom_text(
     aes(
-      x = 0.96,
+      x = 0.94,
       label = go_term_wrapped
     ),
     hjust = 1,
-    size = 2.4,
+    size = 2.35,
     lineheight = 0.72
   ) +
 
   # GO LOG2FE BARS
   geom_segment(
     aes(
-      x = bar_x_start,
-      xend = bar_x_end,
+      x = go_bar_start,
+      xend = go_bar_end,
       yend = go_term_factor,
       color = abs_go_log2FC
     ),
-    linewidth = 5.4,
+    linewidth = 5.2,
     lineend = "round"
   ) +
 
   # GENE COUNT BARS
+  geom_segment(
+    aes(
+      x = gene_bar_start,
+      xend = gene_bar_end,
+      yend = go_term_factor,
+      color = gene_count
+    ),
+    linewidth = 5.2,
+    lineend = "round"
+  ) +
+
+  # BACKGROUND FOR TOP GENES
   geom_rect(
     aes(
-      xmin = 2.02,
-      xmax = 2.02 + gene_bar_width,
+      xmin = 3.05,
+      xmax = 5.95,
 
-      ymin = as.numeric(go_term_factor) - 0.18,
-      ymax = as.numeric(go_term_factor) + 0.18
-    ),
-    fill = NA,
-    color = "black",
-    linewidth = 0.52
-  ) +
+      ymin = as.numeric(go_term_factor) - 0.40,
+      ymax = as.numeric(go_term_factor) + 0.40,
 
-  # GENE COUNT LABELS
-  geom_text(
-    aes(
-      x = 2.18,
-      label = gene_count
+      fill = directory_fill
     ),
-    vjust = 1.72,
-    size = 1.95
-  ) +
-
-  # SOURCE FOLDER COLUMN
-  geom_text(
-    aes(
-      x = 2.72,
-      label = source_folder
-    ),
-    size = 2.15,
-    hjust = 0,
-    color = "black"
+    color = NA,
+    alpha = 0.95
   ) +
 
   # TOP GENES
   ggtext::geom_richtext(
     aes(
-      x = 3.55,
+      x = 3.15,
       label = top_genes
     ),
     hjust = 0,
     fill = NA,
     label.color = NA,
-    size = 2.28,
+    size = 2.24,
     lineheight = 0.90
   ) +
 
@@ -398,29 +411,31 @@ single_plot <- ggplot(
     switch = "y"
   ) +
 
+  # GO LOG2FE COLORS
   scale_color_gradient(
-    low = "#FFD8A8",
-    high = "#C00000",
+    low = "#6FE7FF",
+    high = "#001C7F",
     name = "GO log2FE"
   ) +
 
+  # DIRECTORY BACKGROUNDS
+  scale_fill_identity() +
+
   scale_x_continuous(
 
-    limits = c(0.05, 5.8),
+    limits = c(0.05, 6.0),
 
     breaks = c(
-      0.55,
+      0.52,
       1.48,
-      2.15,
-      2.95,
-      4.55
+      2.40,
+      4.45
     ),
 
     labels = c(
       "GO term",
       "GO log2FE",
       "Gene count",
-      "Gene file folder",
       "Top 5 genes"
     ),
 
@@ -445,12 +460,12 @@ single_plot <- ggplot(
 
     panel.grid = element_blank(),
 
-    panel.spacing.y = unit(0.10, "lines"),
+    panel.spacing.y = unit(0.08, "lines"),
 
     panel.border = element_rect(
       color = "grey35",
       fill = NA,
-      linewidth = 0.52
+      linewidth = 0.50
     ),
 
     strip.placement = "outside",
@@ -458,13 +473,13 @@ single_plot <- ggplot(
     strip.background.y = element_rect(
       fill = "grey92",
       color = "grey35",
-      linewidth = 0.52
+      linewidth = 0.50
     ),
 
     strip.text.y.left = element_text(
       angle = 90,
       face = "bold",
-      size = 8.8,
+      size = 8.6,
       margin = margin(1, 1, 1, 1)
     ),
 
@@ -473,7 +488,7 @@ single_plot <- ggplot(
 
     axis.text.x = element_text(
       face = "bold",
-      size = 8.4,
+      size = 8.2,
       color = "black",
       margin = margin(t = 2)
     ),
@@ -482,16 +497,16 @@ single_plot <- ggplot(
 
     legend.title = element_text(
       face = "bold",
-      size = 8.8
+      size = 8.6
     ),
 
     legend.text = element_text(
-      size = 7.8
+      size = 7.7
     ),
 
     plot.margin = margin(
       3,
-      5,
+      4,
       3,
       3
     )
@@ -506,8 +521,8 @@ png(
     output_dir,
     "single_GO_summary_plot_boxed_facets.png"
   ),
-  width = 3000,
-  height = max(1500, 42 * nrow(plot_data)),
+  width = 3100,
+  height = max(1450, 40 * nrow(plot_data)),
   res = 240
 )
 
@@ -524,8 +539,8 @@ pdf(
     output_dir,
     "single_GO_summary_plot_boxed_facets.pdf"
   ),
-  width = 15,
-  height = max(6.5, 0.22 * nrow(plot_data))
+  width = 15.5,
+  height = max(6.2, 0.21 * nrow(plot_data))
 )
 
 print(single_plot)
