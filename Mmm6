@@ -1,6 +1,6 @@
 # =========================================================
 # Single polished GO summary plot
-# GO term | GO log2FE bar | gene-count dot | top 5 genes
+# GO term | GO log2FE bar | colored gene-group dots | top 5 genes
 # =========================================================
 
 library(tidyverse)
@@ -24,6 +24,10 @@ datasets <- tribble(
 
 # TSV facet file
 facet_file <- "GO_facets.tsv"
+
+# TSV with:
+# gene_id    hex_color
+gene_color_file <- "gene_colors.tsv"
 
 output_dir <- "heatmap_outputs"
 dir.create(output_dir, showWarnings = FALSE)
@@ -62,6 +66,23 @@ facet_df <- read_tsv(
   mutate(
     go_term = as.character(go_term),
     facet = as.character(facet)
+  )
+
+# =========================================================
+# LOAD GENE COLORS
+# =========================================================
+
+gene_color_df <- read_tsv(
+  gene_color_file,
+  show_col_types = FALSE
+) %>%
+  select(
+    gene_id = 1,
+    hex_color = 2
+  ) %>%
+  mutate(
+    gene_id = as.character(gene_id),
+    hex_color = as.character(hex_color)
   )
 
 # =========================================================
@@ -168,7 +189,8 @@ go_gene_long <- bind_rows(go_gene_list) %>%
   filter(!is.na(go_term), !is.na(facet))
 
 merged <- go_gene_long %>%
-  left_join(gene_long, by = "gene_id")
+  left_join(gene_long, by = "gene_id") %>%
+  left_join(gene_color_df, by = "gene_id")
 
 # =========================================================
 # GENE UNIQUENESS
@@ -264,6 +286,36 @@ plot_data <- plot_data %>%
   )
 
 # =========================================================
+# DOT PANEL DATA
+# =========================================================
+
+dot_data <- merged %>%
+  filter(!is.na(hex_color)) %>%
+  group_by(facet, go_term, hex_color) %>%
+  summarise(
+    color_gene_count = n_distinct(gene_id),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    plot_data %>%
+      select(
+        facet,
+        go_term,
+        go_term_factor
+      ),
+    by = c("facet", "go_term")
+  ) %>%
+  group_by(facet, go_term) %>%
+  arrange(hex_color, .by_group = TRUE) %>%
+  mutate(
+    dot_index = row_number(),
+
+    # spread dots horizontally
+    dot_x = 2.55 + (dot_index - 1) * 0.08
+  ) %>%
+  ungroup()
+
+# =========================================================
 # SINGLE PLOT
 # =========================================================
 
@@ -300,26 +352,32 @@ single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
 
   ggnewscale::new_scale_color() +
 
-  # GENE COUNT DOTS
+  # MULTI-COLOR GENE DOTS
   geom_point(
+    data = dot_data,
     aes(
-      x = 2.85,
-      size = gene_count,
-      color = gene_count
+      x = dot_x,
+      y = go_term_factor,
+      size = color_gene_count,
+      fill = hex_color
     ),
-    alpha = 0.9
+    shape = 21,
+    color = "black",
+    stroke = 0.25,
+    alpha = 0.95
   ) +
 
-  scale_color_gradient(
-    low = "#D7B5F5",
-    high = "#4B0082",
-    name = "Gene count"
+  scale_fill_identity(
+    name = "Gene groups",
+    guide = "legend",
+    labels = unique(dot_data$hex_color),
+    breaks = unique(dot_data$hex_color)
   ) +
 
   # TOP GENES
   ggtext::geom_richtext(
     aes(
-      x = 3.65,
+      x = 4.15,
       label = top_genes
     ),
     hjust = 0,
@@ -337,18 +395,18 @@ single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
   ) +
 
   scale_size_continuous(
-    name = "Genes in GO",
+    name = "Genes per group",
     range = c(2, 7)
   ) +
 
   # COLUMN HEADERS
   scale_x_continuous(
-    limits = c(0.05, 5.25),
-    breaks = c(0.6, 1.9, 2.85, 4.25),
+    limits = c(0.05, 6.0),
+    breaks = c(0.6, 1.9, 3.0, 4.75),
     labels = c(
       "GO term",
       "log2FE",
-      "Gene count",
+      "Gene groups",
       "Top 5 genes"
     )
   ) +
@@ -412,7 +470,7 @@ png(
     output_dir,
     "single_GO_summary_plot_boxed_facets.png"
   ),
-  width = 3000,
+  width = 3200,
   height = max(1800, 52 * nrow(plot_data)),
   res = 220
 )
@@ -430,7 +488,7 @@ pdf(
     output_dir,
     "single_GO_summary_plot_boxed_facets.pdf"
   ),
-  width = 15,
+  width = 16,
   height = max(8, 0.28 * nrow(plot_data))
 )
 
@@ -460,6 +518,11 @@ write_csv(
 write_csv(
   plot_data,
   file.path(output_dir, "single_GO_summary_plot_data.csv")
+)
+
+write_csv(
+  dot_data,
+  file.path(output_dir, "GO_dot_panel_data.csv")
 )
 
 message("Done. Plot saved in: ", output_dir)
