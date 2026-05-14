@@ -1,12 +1,11 @@
 # =========================================================
 # Single polished GO summary plot
-# GO term | GO log2FE | Gene count | Top genes
+# GO term | GO log2FE bar | gene-count dot | top 5 genes
 # =========================================================
 
 library(tidyverse)
 library(ggtext)
 library(scales)
-library(fs)
 library(ggnewscale)
 
 # =========================================================
@@ -15,14 +14,15 @@ library(ggnewscale)
 
 datasets <- tribble(
   ~comparison,    ~direction, ~go_file,              ~gene_file,
-  "comparison_1", "up",       "comp1_up_GO.csv",     "folderA/comp1_up_genes.csv",
+  "comparison_1", "up",       "comp1_up_GO.csv",     "comp1_up_genes.csv",
   "comparison_1", "down",     "",                    "",
-  "comparison_2", "up",       "comp2_up_GO.csv",     "folderB/comp2_up_genes.csv",
-  "comparison_2", "down",     "comp2_down_GO.csv",   "folderB/comp2_down_genes.csv",
+  "comparison_2", "up",       "comp2_up_GO.csv",     "comp2_up_genes.csv",
+  "comparison_2", "down",     "comp2_down_GO.csv",   "comp2_down_genes.csv",
   "comparison_3", "up",       "",                    "",
-  "comparison_3", "down",     "comp3_down_GO.csv",   "folderC/comp3_down_genes.csv"
+  "comparison_3", "down",     "comp3_down_GO.csv",   "comp3_down_genes.csv"
 )
 
+# TSV facet file
 facet_file <- "GO_facets.tsv"
 
 output_dir <- "heatmap_outputs"
@@ -32,17 +32,6 @@ GO_LOG2FE_THRESHOLD <- 3
 SIGN_GO_BY_DIRECTION <- TRUE
 
 TOP_N_GENES <- 5
-
-# =========================================================
-# DIRECTORY COLORS
-# =========================================================
-
-directory_colors <- c(
-  "folderA" = "#FDEDEC",
-  "folderB" = "#EBF5FB",
-  "folderC" = "#F4ECF7",
-  "unknown" = "#F2F3F4"
-)
 
 # =========================================================
 # COLUMN SETTINGS
@@ -90,8 +79,7 @@ for (i in seq_len(nrow(datasets))) {
   go_file <- datasets$go_file[i]
   gene_file <- datasets$gene_file[i]
 
-  if (is.na(go_file) || is.na(gene_file) ||
-      go_file == "" || gene_file == "") {
+  if (is.na(go_file) || is.na(gene_file) || go_file == "" || gene_file == "") {
     message("Skipping ", comparison, " ", direction, ": missing file.")
     next
   }
@@ -102,21 +90,10 @@ for (i in seq_len(nrow(datasets))) {
   }
 
   dataset_name <- paste(comparison, direction, sep = "_")
-
-  source_folder <- basename(path_dir(gene_file))
-
-  if (source_folder == "") {
-    source_folder <- "unknown"
-  }
-
   message("Loading ", dataset_name)
 
   go_df <- read_csv(go_file, show_col_types = FALSE)
   gene_df <- read_csv(gene_file, show_col_types = FALSE)
-
-  # =========================================================
-  # GENE DATA
-  # =========================================================
 
   gene_long <- gene_df %>%
     select(
@@ -129,10 +106,6 @@ for (i in seq_len(nrow(datasets))) {
     )
 
   gene_long_list[[dataset_name]] <- gene_long
-
-  # =========================================================
-  # GO DATA
-  # =========================================================
 
   go_long <- go_df %>%
     transmute(
@@ -154,17 +127,7 @@ for (i in seq_len(nrow(datasets))) {
     )
 
   go_long_list[[dataset_name]] <- go_long %>%
-    mutate(
-      comparison = comparison,
-      direction = direction,
-      dataset_name = dataset_name,
-      source_folder = source_folder
-    ) %>%
     select(-gene_list)
-
-  # =========================================================
-  # GO-GENE LINKS
-  # =========================================================
 
   go_gene_links <- go_long %>%
     separate_rows(gene_list, sep = ",") %>%
@@ -174,11 +137,7 @@ for (i in seq_len(nrow(datasets))) {
       gene_id != "",
       tolower(gene_id) != "nan"
     ) %>%
-    mutate(
-      comparison = comparison,
-      source_folder = source_folder
-    ) %>%
-    select(go_term, gene_id, comparison, source_folder)
+    select(go_term, gene_id)
 
   go_gene_list[[dataset_name]] <- go_gene_links
 }
@@ -188,10 +147,13 @@ for (i in seq_len(nrow(datasets))) {
 # =========================================================
 
 go_long <- bind_rows(go_long_list) %>%
+  group_by(go_term) %>%
+  summarise(
+    go_log2FC = mean(go_log2FC, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
   left_join(facet_df, by = "go_term") %>%
-  mutate(
-    facet = replace_na(facet, "Unannotated")
-  )
+  mutate(facet = replace_na(facet, "Unannotated"))
 
 gene_long <- bind_rows(gene_long_list) %>%
   group_by(gene_id) %>%
@@ -202,15 +164,8 @@ gene_long <- bind_rows(gene_long_list) %>%
 
 go_gene_long <- bind_rows(go_gene_list) %>%
   distinct() %>%
-  left_join(
-    go_long %>%
-      select(go_term, facet, comparison, source_folder),
-    by = c("go_term", "comparison", "source_folder")
-  ) %>%
-  filter(
-    !is.na(go_term),
-    !is.na(facet)
-  )
+  left_join(go_long, by = "go_term") %>%
+  filter(!is.na(go_term), !is.na(facet))
 
 merged <- go_gene_long %>%
   left_join(gene_long, by = "gene_id")
@@ -229,52 +184,33 @@ gene_uniqueness <- go_gene_long %>%
 
 top_gene_labels <- merged %>%
   filter(!is.na(gene_log2FC)) %>%
-  group_by(
-    facet,
-    comparison,
-    source_folder,
-    go_term
-  ) %>%
-  arrange(
-    desc(gene_log2FC),
-    .by_group = TRUE
-  ) %>%
+  group_by(facet, go_term) %>%
+  arrange(desc(gene_log2FC), .by_group = TRUE) %>%
   slice_head(n = TOP_N_GENES) %>%
   ungroup() %>%
-  left_join(
-    gene_uniqueness,
-    by = "gene_id"
-  ) %>%
+  left_join(gene_uniqueness, by = "gene_id") %>%
   mutate(
-
     gene_label = ifelse(
-
       go_occurrences == 1,
 
+      # UNIQUE GENES = bold black
       paste0(
-        "<b>",
+        "<b><span style='color:#000000;'>",
         gene_id,
-        "</b>"
+        "</span></b>"
       ),
 
+      # NON-UNIQUE GENES = dark gray
       paste0(
-        "<span style='color:#666666;'>",
+        "<span style='color:#555555;'>",
         gene_id,
         "</span>"
       )
     )
   ) %>%
-  group_by(
-    facet,
-    comparison,
-    source_folder,
-    go_term
-  ) %>%
+  group_by(facet, go_term) %>%
   summarise(
-    top_genes = paste(
-      gene_label,
-      collapse = ", "
-    ),
+    top_genes = paste(gene_label, collapse = ", "),
     .groups = "drop"
   )
 
@@ -283,229 +219,115 @@ top_gene_labels <- merged %>%
 # =========================================================
 
 plot_data <- go_long %>%
-
   left_join(
-
     go_gene_long %>%
-      group_by(
-        facet,
-        comparison,
-        source_folder,
-        go_term
-      ) %>%
+      group_by(facet, go_term) %>%
       summarise(
         gene_count = n_distinct(gene_id),
         .groups = "drop"
       ),
-
-    by = c(
-      "facet",
-      "comparison",
-      "source_folder",
-      "go_term"
-    )
+    by = c("facet", "go_term")
   ) %>%
-
   left_join(
     top_gene_labels,
-    by = c(
-      "facet",
-      "comparison",
-      "source_folder",
-      "go_term"
-    )
+    by = c("facet", "go_term")
   ) %>%
-
   mutate(
     gene_count = replace_na(gene_count, 0),
     top_genes = replace_na(top_genes, ""),
-    abs_go_log2FC = abs(go_log2FC),
-
-    directory_fill = directory_colors[source_folder]
+    abs_go_log2FC = abs(go_log2FC)
   ) %>%
-
-  arrange(
-    facet,
-    source_folder,
-    desc(abs_go_log2FC)
-  ) %>%
-
-  group_by(
-    facet,
-    source_folder
-  ) %>%
-  mutate(
-    go_order = row_number()
-  ) %>%
+  arrange(facet, desc(abs_go_log2FC)) %>%
+  group_by(facet) %>%
+  mutate(go_order = row_number()) %>%
   ungroup() %>%
-
   mutate(
-
-    go_term_wrapped = str_wrap(
-      go_term,
-      width = 42
-    ),
-
+    go_term_wrapped = str_wrap(go_term, width = 45),
     go_term_factor = factor(
-      paste(
-        facet,
-        source_folder,
-        go_order,
-        go_term_wrapped,
-        sep = "___"
-      ),
+      paste(facet, go_order, go_term_wrapped, sep = "___"),
       levels = rev(
-        paste(
-          facet,
-          source_folder,
-          go_order,
-          go_term_wrapped,
-          sep = "___"
-        )
+        paste(facet, go_order, go_term_wrapped, sep = "___")
       )
     )
   )
 
-# =========================================================
-# SCALE VALUES
-# =========================================================
-
-max_abs_go <- max(
-  plot_data$abs_go_log2FC,
-  na.rm = TRUE
-)
-
-max_gene_count <- max(
-  plot_data$gene_count,
-  na.rm = TRUE
-)
+max_abs_go <- max(plot_data$abs_go_log2FC, na.rm = TRUE)
 
 plot_data <- plot_data %>%
   mutate(
-
-    # GO LOG2FE BAR
-    go_bar_start = 1.05,
-
-    go_bar_end = 1.05 + rescale(
+    bar_x_start = 1.35,
+    bar_x_end = 1.35 + rescale(
       abs_go_log2FC,
-      to = c(0.05, 0.82),
+      to = c(0.05, 0.95),
       from = c(0, max_abs_go)
-    ),
-
-    # GENE COUNT BAR
-    gene_bar_start = 2.02,
-
-    gene_bar_end = 2.02 + rescale(
-      gene_count,
-      to = c(0.05, 0.62),
-      from = c(0, max_gene_count)
     )
   )
 
 # =========================================================
-# PLOT
+# SINGLE PLOT
 # =========================================================
 
-single_plot <- ggplot(
-  plot_data,
-  aes(y = go_term_factor)
-) +
+single_plot <- ggplot(plot_data, aes(y = go_term_factor)) +
 
-  # =========================================================
-  # TOP GENE BACKGROUNDS
-  # =========================================================
-
-  geom_rect(
-    aes(
-      xmin = 3.02,
-      xmax = 6.20,
-
-      ymin = as.numeric(go_term_factor) - 0.32,
-      ymax = as.numeric(go_term_factor) + 0.32,
-
-      fill = directory_fill
-    ),
-    color = NA,
-    alpha = 0.95
-  ) +
-
-  # =========================================================
-  # GO TERMS
-  # =========================================================
-
+  # GO TERM COLUMN
   geom_text(
     aes(
-      x = 0.92,
+      x = 1.05,
       label = go_term_wrapped
     ),
     hjust = 1,
-    size = 2.30,
-    lineheight = 0.72
+    size = 2.6,
+    lineheight = 0.75
   ) +
 
-  # =========================================================
-  # GO LOG2FE BARS
-  # =========================================================
-
+  # GO LOG2FE BAR
   geom_segment(
     aes(
-      x = go_bar_start,
-      xend = go_bar_end,
+      x = bar_x_start,
+      xend = bar_x_end,
       yend = go_term_factor,
       color = abs_go_log2FC
     ),
-    linewidth = 5.1,
+    linewidth = 6,
     lineend = "round"
   ) +
 
   scale_color_gradient(
-    low = "#6FE7FF",
-    high = "#001C7F",
-    name = "GO log2FE"
+    low = "#B7D4F0",
+    high = "#08306B",
+    name = "log2FE"
   ) +
 
   ggnewscale::new_scale_color() +
 
-  # =========================================================
-  # GENE COUNT BARS
-  # =========================================================
-
-  geom_segment(
+  # GENE COUNT DOTS
+  geom_point(
     aes(
-      x = gene_bar_start,
-      xend = gene_bar_end,
-      yend = go_term_factor,
+      x = 2.85,
+      size = gene_count,
       color = gene_count
     ),
-    linewidth = 5.1,
-    lineend = "round"
+    alpha = 0.9
   ) +
 
   scale_color_gradient(
-    low = "#E6CCFF",
+    low = "#D7B5F5",
     high = "#4B0082",
     name = "Gene count"
   ) +
 
-  # =========================================================
   # TOP GENES
-  # =========================================================
-
   ggtext::geom_richtext(
     aes(
-      x = 3.14,
+      x = 3.65,
       label = top_genes
     ),
     hjust = 0,
     fill = NA,
     label.color = NA,
-    size = 2.22,
-    lineheight = 0.90
+    size = 2.55,
+    lineheight = 0.95
   ) +
-
-  # =========================================================
-  # FACETS
-  # =========================================================
 
   facet_grid(
     facet ~ .,
@@ -514,96 +336,53 @@ single_plot <- ggplot(
     switch = "y"
   ) +
 
-  # =========================================================
-  # AXES
-  # =========================================================
+  scale_size_continuous(
+    name = "Genes in GO",
+    range = c(2, 7)
+  ) +
 
+  # COLUMN HEADERS
   scale_x_continuous(
-
-    limits = c(0.05, 6.25),
-
-    breaks = c(
-      0.52,
-      1.48,
-      2.38,
-      4.60
-    ),
-
+    limits = c(0.05, 5.25),
+    breaks = c(0.6, 1.9, 2.85, 4.25),
     labels = c(
       "GO term",
-      "GO log2FE",
+      "log2FE",
       "Gene count",
       "Top 5 genes"
-    ),
-
-    expand = c(0, 0)
-  ) +
-
-  scale_y_discrete(
-    expand = expansion(
-      mult = c(0, 0)
     )
   ) +
-
-  coord_cartesian(
-    clip = "off"
-  ) +
-
-  # =========================================================
-  # LABELS
-  # =========================================================
 
   labs(
     x = NULL,
     y = NULL
   ) +
 
-  # =========================================================
-  # LEGENDS
-  # =========================================================
-
-  guides(
-
-    color = guide_colorbar(
-      barheight = unit(3.2, "cm"),
-      frame.colour = "black"
-    )
-  ) +
-
-  # =========================================================
-  # THEME
-  # =========================================================
-
-  theme_minimal(base_size = 10) +
+  theme_minimal(base_size = 11) +
 
   theme(
-
     panel.grid = element_blank(),
-
-    panel.spacing.y = unit(
-      0.02,
-      "lines"
-    ),
 
     panel.border = element_rect(
       color = "grey35",
       fill = NA,
-      linewidth = 0.50
+      linewidth = 0.7
     ),
 
     strip.placement = "outside",
 
     strip.background.y = element_rect(
-      fill = "grey92",
+      fill = "grey88",
       color = "grey35",
-      linewidth = 0.50
+      linewidth = 0.7
     ),
 
     strip.text.y.left = element_text(
       angle = 90,
       face = "bold",
-      size = 8.5,
-      margin = margin(1, 1, 1, 1)
+      size = 10,
+      color = "black",
+      margin = margin(4, 4, 4, 4)
     ),
 
     axis.text.y = element_blank(),
@@ -611,27 +390,16 @@ single_plot <- ggplot(
 
     axis.text.x = element_text(
       face = "bold",
-      size = 8.1,
-      color = "black",
-      margin = margin(t = 2)
+      size = 10,
+      color = "black"
     ),
+
+    plot.margin = margin(10, 20, 10, 10),
 
     legend.position = "right",
 
     legend.title = element_text(
-      face = "bold",
-      size = 8.5
-    ),
-
-    legend.text = element_text(
-      size = 7.6
-    ),
-
-    plot.margin = margin(
-      2,
-      4,
-      2,
-      2
+      face = "bold"
     )
   )
 
@@ -644,12 +412,9 @@ png(
     output_dir,
     "single_GO_summary_plot_boxed_facets.png"
   ),
-  width = 3200,
-  height = max(
-    1350,
-    38 * nrow(plot_data)
-  ),
-  res = 240
+  width = 3000,
+  height = max(1800, 52 * nrow(plot_data)),
+  res = 220
 )
 
 print(single_plot)
@@ -665,11 +430,8 @@ pdf(
     output_dir,
     "single_GO_summary_plot_boxed_facets.pdf"
   ),
-  width = 15.5,
-  height = max(
-    6,
-    0.20 * nrow(plot_data)
-  )
+  width = 15,
+  height = max(8, 0.28 * nrow(plot_data))
 )
 
 print(single_plot)
@@ -682,37 +444,22 @@ dev.off()
 
 write_csv(
   go_long,
-  file.path(
-    output_dir,
-    "parsed_GO_terms_combined.csv"
-  )
+  file.path(output_dir, "parsed_GO_terms_combined.csv")
 )
 
 write_csv(
   gene_long,
-  file.path(
-    output_dir,
-    "parsed_gene_log2FC_combined.csv"
-  )
+  file.path(output_dir, "parsed_gene_log2FC_combined.csv")
 )
 
 write_csv(
   merged,
-  file.path(
-    output_dir,
-    "GO_gene_combined_long.csv"
-  )
+  file.path(output_dir, "GO_gene_combined_long.csv")
 )
 
 write_csv(
   plot_data,
-  file.path(
-    output_dir,
-    "single_GO_summary_plot_data.csv"
-  )
+  file.path(output_dir, "single_GO_summary_plot_data.csv")
 )
 
-message(
-  "Done. Plot saved in: ",
-  output_dir
-)
+message("Done. Plot saved in: ", output_dir)
