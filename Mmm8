@@ -332,6 +332,7 @@ plot_data <- go_long %>%
   ungroup() %>%
   mutate(
 
+    # NO WRAPPING
     go_term_display = go_term,
 
     go_term_factor = factor(
@@ -374,17 +375,17 @@ max_abs_go <- max(
 
 plot_data <- plot_data %>%
   mutate(
-    bar_x_start = 2.35,
+    bar_x_start = 1.98,
 
-    bar_x_end = 2.35 + rescale(
+    bar_x_end = 1.98 + rescale(
       abs_go_log2FC,
-      to = c(0.10, 0.95),
+      to = c(0.10, 0.82),
       from = c(0, max_abs_go)
     )
   )
 
 # =========================================================
-# TREND DOT POSITIONS
+# FIXED COLOR COLUMNS
 # =========================================================
 
 color_positions <- group_trend_df %>%
@@ -392,7 +393,9 @@ color_positions <- group_trend_df %>%
   transmute(
     hex_color,
     color_index = row_number(),
-    dot_x = 3.65 + (row_number() - 1) * 0.10
+
+    # compact spacing
+    dot_x = 3.08 + (row_number() - 1) * 0.075
   )
 
 dot_data <- merged %>%
@@ -449,11 +452,17 @@ comparison_separators <- plot_data %>%
 # PANEL POSITIONS
 # =========================================================
 
-contrast_x <- -0.55
-go_term_x <- 2.08
+contrast_x <- -0.34
+go_term_x <- 1.78
 
-gene_panel_start <- max(color_positions$dot_x) + 0.18
-gene_panel_end <- gene_panel_start + 2.7
+bar_panel_start <- 1.92
+bar_panel_end <- 2.82
+
+trend_panel_start <- 2.96
+trend_panel_end <- max(color_positions$dot_x) + 0.05
+
+gene_panel_start <- trend_panel_end + 0.16
+gene_panel_end <- gene_panel_start + 2.15
 
 # =========================================================
 # FACET ORDERING
@@ -492,64 +501,60 @@ single_plot <- ggplot(
   geom_hline(
     data = comparison_separators,
     aes(yintercept = separator_y),
-    color = "grey82",
-    linewidth = 0.45,
+    color = "grey80",
+    linewidth = 0.5,
     linetype = "dotted"
   ) +
 
   # ======================================================
-  # SEGMENTED VERTICAL PANEL DIVIDERS
+  # VERTICAL PANEL DIVIDERS
   # ======================================================
 
   geom_segment(
-    data = comparison_separators,
     aes(
-      x = 1.95,
-      xend = 1.95,
-      y = ymin - 0.45,
-      yend = ymax + 0.45
+      x = 1.58,
+      xend = 1.58,
+      y = -Inf,
+      yend = Inf
     ),
-    color = "grey84",
-    linewidth = 0.45,
+    color = "grey82",
+    linewidth = 0.55,
     inherit.aes = FALSE
   ) +
 
   geom_segment(
-    data = comparison_separators,
     aes(
-      x = 2.25,
-      xend = 2.25,
-      y = ymin - 0.45,
-      yend = ymax + 0.45
+      x = 1.88,
+      xend = 1.88,
+      y = -Inf,
+      yend = Inf
     ),
-    color = "grey84",
-    linewidth = 0.45,
+    color = "grey82",
+    linewidth = 0.55,
     inherit.aes = FALSE
   ) +
 
   geom_segment(
-    data = comparison_separators,
     aes(
-      x = 3.55,
-      xend = 3.55,
-      y = ymin - 0.45,
-      yend = ymax + 0.45
+      x = 2.90,
+      xend = 2.90,
+      y = -Inf,
+      yend = Inf
     ),
-    color = "grey84",
-    linewidth = 0.45,
+    color = "grey82",
+    linewidth = 0.55,
     inherit.aes = FALSE
   ) +
 
   geom_segment(
-    data = comparison_separators,
     aes(
-      x = gene_panel_start - 0.12,
-      xend = gene_panel_start - 0.12,
-      y = ymin - 0.45,
-      yend = ymax + 0.45
+      x = gene_panel_start - 0.08,
+      xend = gene_panel_start - 0.08,
+      y = -Inf,
+      yend = Inf
     ),
-    color = "grey84",
-    linewidth = 0.45,
+    color = "grey82",
+    linewidth = 0.55,
     inherit.aes = FALSE
   ) +
 
@@ -583,7 +588,7 @@ single_plot <- ggplot(
       label = go_term_display
     ),
     hjust = 1,
-    size = 2.55,
+    size = 2.45,
     lineheight = 0.9
   ) +
 
@@ -600,7 +605,7 @@ single_plot <- ggplot(
       yend = y_pos,
       color = abs_go_log2FC
     ),
-    linewidth = 5.8,
+    linewidth = 5.6,
     lineend = "round"
   ) +
 
@@ -633,7 +638,7 @@ single_plot <- ggplot(
 
   scale_size_continuous(
     name = "Genes per trend",
-    range = c(2.5, 6.8)
+    range = c(2.2, 6.0)
   ) +
 
   # ======================================================
@@ -643,15 +648,15 @@ single_plot <- ggplot(
   ggtext::geom_richtext(
     data = plot_data,
     aes(
-      x = gene_panel_start + 0.08,
+      x = gene_panel_start + 0.10,
       y = y_pos,
       label = top_genes
     ),
     hjust = 0,
     fill = NA,
     label.color = NA,
-    size = 2.35,
-    lineheight = 1.0
+    size = 2.45,
+    lineheight = 1.08
   ) +
 
   facet_grid(
@@ -664,18 +669,18 @@ single_plot <- ggplot(
   scale_y_continuous(
     breaks = NULL,
     labels = NULL,
-    expand = expansion(add = c(0.18, 0.18))
+    expand = expansion(add = c(0.55, 0.55))
   ) +
 
   scale_x_continuous(
     limits = c(
-      -0.92,
-      gene_panel_end - 0.18
+      -0.72,
+      gene_panel_end
     ),
 
     breaks = c(
       contrast_x,
-      2.82,
+      mean(c(bar_panel_start, bar_panel_end)),
       mean(color_positions$dot_x),
       gene_panel_start + 0.55
     ),
@@ -687,7 +692,7 @@ single_plot <- ggplot(
       "Top genes"
     ),
 
-    expand = expansion(mult = c(0, 0))
+    expand = expansion(mult = c(0.002, 0.002))
   ) +
 
   labs(
@@ -708,23 +713,23 @@ single_plot <- ggplot(
     panel.border = element_rect(
       color = "grey35",
       fill = NA,
-      linewidth = 0.65
+      linewidth = 0.7
     ),
 
     strip.placement = "outside",
 
     strip.background.y = element_rect(
-      fill = "grey92",
+      fill = "grey90",
       color = "grey35",
-      linewidth = 0.65
+      linewidth = 0.7
     ),
 
     strip.text.y.left = element_text(
       angle = 90,
       face = "bold",
-      size = 9.5,
+      size = 10,
       color = "black",
-      margin = margin(2, 2, 2, 2)
+      margin = margin(3, 3, 3, 3)
     ),
 
     axis.text.y = element_blank(),
@@ -732,29 +737,29 @@ single_plot <- ggplot(
 
     axis.text.x = element_text(
       face = "bold",
-      size = 8.8,
+      size = 9.2,
       color = "black",
-      margin = margin(t = 4)
+      margin = margin(t = 6)
     ),
 
     plot.margin = margin(
-      5,
       8,
-      5,
-      22
+      14,
+      8,
+      28
     ),
 
-    panel.spacing.y = unit(0.10, "lines"),
+    panel.spacing.y = unit(0.18, "lines"),
 
     legend.position = "right",
 
     legend.title = element_text(
       face = "bold",
-      size = 8.5
+      size = 9
     ),
 
     legend.text = element_text(
-      size = 7.5
+      size = 8
     )
   )
 
@@ -767,11 +772,13 @@ png(
     output_dir,
     "single_GO_summary_plot_compact.png"
   ),
-  width = 5200,
+
+  width = 5000,
   height = max(
-    2200,
-    58 * nrow(plot_data)
+    2000,
+    54 * nrow(plot_data)
   ),
+
   res = 260
 )
 
@@ -788,10 +795,11 @@ pdf(
     output_dir,
     "single_GO_summary_plot_compact.pdf"
   ),
-  width = 24,
+
+  width = 22,
   height = max(
-    9,
-    0.30 * nrow(plot_data)
+    8,
+    0.28 * nrow(plot_data)
   )
 )
 
