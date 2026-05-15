@@ -1,6 +1,6 @@
 # =========================================================
 # Compact polished GO summary plot
-# GO term | log2 Fold Enrichment | trend columns | top genes
+# GO term | log2 Fold Enrichment | trend groups | top genes
 # =========================================================
 
 library(tidyverse)
@@ -30,7 +30,6 @@ gene_color_file <- "gene_colors.tsv"
 
 # CSV:
 # Color,coordinates,Significance
-# #000000,0;0.7;-0.5,1;0;1
 group_trend_file <- "group_trends.csv"
 
 output_dir <- "heatmap_outputs"
@@ -105,8 +104,6 @@ group_trend_df <- read_csv(
     hex_color = as.character(hex_color),
     coordinates = as.character(coordinates),
     significance = as.character(significance),
-
-    # preserve input order
     color_order = row_number()
   )
 
@@ -335,7 +332,7 @@ plot_data <- go_long %>%
   ungroup() %>%
   mutate(
 
-    # NO WRAPPING
+    # no wrapping
     go_term_display = go_term,
 
     go_term_factor = factor(
@@ -368,17 +365,6 @@ plot_data <- plot_data %>%
   )
 
 # =========================================================
-# GLYPH HEADER PANEL
-# =========================================================
-
-glyph_panel_name <- "__GLYPHS__"
-
-glyph_panel <- tibble(
-  facet = glyph_panel_name,
-  y_pos = 1
-)
-
-# =========================================================
 # BAR POSITIONS
 # =========================================================
 
@@ -408,7 +394,7 @@ color_positions <- group_trend_df %>%
     hex_color,
     color_index = row_number(),
 
-    # extra spacing between trend columns
+    # spacing between columns
     dot_x = 3.65 + (row_number() - 1) * 0.10
   )
 
@@ -444,50 +430,10 @@ dot_data <- merged %>%
   )
 
 # =========================================================
-# GLYPH DATA
+# COMPARISON SEPARATORS
 # =========================================================
 
-glyph_data <- group_trend_df %>%
-  separate_rows(coordinates, sep = ";") %>%
-  group_by(hex_color) %>%
-  mutate(
-    point_index = row_number(),
-    y_raw = as.numeric(coordinates)
-  ) %>%
-  ungroup() %>%
-  left_join(
-    color_positions,
-    by = "hex_color"
-  ) %>%
-  group_by(hex_color) %>%
-  mutate(
-
-    # fixed dramatic scale
-    y_scaled = scales::rescale(
-      y_raw,
-      to = c(0.70, 1.30),
-      from = c(-1.5, 1.5)
-    ),
-
-    # wider glyph spacing
-    x_scaled = dot_x + scales::rescale(
-      point_index,
-      to = c(-0.035, 0.035),
-      from = c(
-        1,
-        max(point_index)
-      )
-    ),
-
-    facet = glyph_panel_name
-  ) %>%
-  ungroup()
-
-# =========================================================
-# COMPARISON BRACKET LABELS
-# =========================================================
-
-comparison_brackets <- plot_data %>%
+comparison_separators <- plot_data %>%
   group_by(
     facet,
     comparison_label
@@ -497,33 +443,32 @@ comparison_brackets <- plot_data %>%
     ymax = max(y_pos),
     ymid = mean(c(ymin, ymax)),
     .groups = "drop"
+  ) %>%
+  mutate(
+    separator_y = ymax + 0.5
   )
 
 # =========================================================
-# FINAL PLOT DATA
+# PANEL POSITIONS
 # =========================================================
 
-plot_data_final <- bind_rows(
-  plot_data,
-  glyph_panel
-)
+contrast_x <- -0.55
+go_term_x <- 2.15
+
+bar_panel_start <- 2.32
+bar_panel_end <- 3.45
+
+gene_panel_start <- max(color_positions$dot_x) + 0.18
+gene_panel_end <- gene_panel_start + 2.7
 
 # =========================================================
 # FACET ORDERING
 # =========================================================
 
-facet_levels <- c(
-  "__GLYPHS__",
-  sort(unique(plot_data$facet))
-)
+facet_levels <- sort(unique(plot_data$facet))
 
 plot_data$facet <- factor(
   plot_data$facet,
-  levels = facet_levels
-)
-
-plot_data_final$facet <- factor(
-  plot_data_final$facet,
   levels = facet_levels
 )
 
@@ -532,13 +477,8 @@ dot_data$facet <- factor(
   levels = facet_levels
 )
 
-glyph_data$facet <- factor(
-  glyph_data$facet,
-  levels = facet_levels
-)
-
-comparison_brackets$facet <- factor(
-  comparison_brackets$facet,
+comparison_separators$facet <- factor(
+  comparison_separators$facet,
   levels = facet_levels
 )
 
@@ -547,66 +487,63 @@ comparison_brackets$facet <- factor(
 # =========================================================
 
 single_plot <- ggplot(
-  plot_data_final,
+  plot_data,
   aes(y = y_pos)
 ) +
 
-  # comparison brackets
-  geom_segment(
-    data = comparison_brackets,
-    aes(
-      x = 0.10,
-      xend = 0.10,
-      y = ymin,
-      yend = ymax
-    ),
-    linewidth = 0.7,
-    inherit.aes = FALSE
+  # ======================================================
+  # DOTTED HORIZONTAL SEPARATORS
+  # ======================================================
+
+  geom_hline(
+    data = comparison_separators,
+    aes(yintercept = separator_y),
+    color = "grey80",
+    linewidth = 0.5,
+    linetype = "dotted"
   ) +
 
-  geom_segment(
-    data = comparison_brackets,
-    aes(
-      x = 0.10,
-      xend = 0.16,
-      y = ymin,
-      yend = ymin
+  # ======================================================
+  # VERTICAL PANEL DIVIDERS
+  # ======================================================
+
+  geom_vline(
+    xintercept = c(
+      1.95,
+      2.25,
+      3.55,
+      gene_panel_start - 0.12
     ),
-    linewidth = 0.7,
-    inherit.aes = FALSE
+    color = "grey82",
+    linewidth = 0.55
   ) +
 
-  geom_segment(
-    data = comparison_brackets,
-    aes(
-      x = 0.10,
-      xend = 0.16,
-      y = ymax,
-      yend = ymax
-    ),
-    linewidth = 0.7,
-    inherit.aes = FALSE
-  ) +
+  # ======================================================
+  # CONTRAST LABELS
+  # ======================================================
 
-  # comparison labels
   geom_text(
-    data = comparison_brackets,
+    data = comparison_separators,
     aes(
-      x = 0.07,
+      x = contrast_x,
       y = ymid,
       label = comparison_label
     ),
     fontface = "bold",
     hjust = 1,
-    size = 2.8,
+    size = 2.9,
+    color = "black",
     inherit.aes = FALSE
   ) +
 
-  # GO terms
+  # ======================================================
+  # GO TERMS
+  # ======================================================
+
   geom_text(
     data = plot_data,
     aes(
-      x = 2.15,
+      x = go_term_x,
       y = y_pos,
       label = go_term_display
     ),
@@ -615,7 +552,10 @@ single_plot <- ggplot(
     lineheight = 0.9
   ) +
 
-  # enrichment bars
+  # ======================================================
+  # ENRICHMENT BARS
+  # ======================================================
+
   geom_segment(
     data = plot_data,
     aes(
@@ -635,26 +575,12 @@ single_plot <- ggplot(
     name = "log2 Fold Enrichment"
   ) +
 
+  # ======================================================
+  # TREND DOTS
+  # ======================================================
+
   ggnewscale::new_scale_color() +
 
-  # trend glyphs
-  geom_line(
-    data = glyph_data,
-    aes(
-      x = x_scaled,
-      y = y_scaled,
-      group = hex_color,
-      color = hex_color
-    ),
-    linewidth = 1.2,
-    alpha = 1,
-    lineend = "round",
-    inherit.aes = FALSE
-  ) +
-
-  scale_color_identity() +
-
-  # trend dots
   geom_point(
     data = dot_data,
     aes(
@@ -675,11 +601,14 @@ single_plot <- ggplot(
     range = c(2.5, 6.8)
   ) +
 
-  # top genes
+  # ======================================================
+  # TOP GENES
+  # ======================================================
+
   ggtext::geom_richtext(
     data = plot_data,
     aes(
-      x = max(color_positions$dot_x) + 0.42,
+      x = gene_panel_start + 0.18,
       y = y_pos,
       label = top_genes
     ),
@@ -694,36 +623,30 @@ single_plot <- ggplot(
     facet ~ .,
     scales = "free_y",
     space = "free_y",
-    switch = "y",
-
-    labeller = labeller(
-      facet = c(
-        "__GLYPHS__" = ""
-      )
-    )
+    switch = "y"
   ) +
 
   scale_y_continuous(
     breaks = NULL,
     labels = NULL,
-    expand = expansion(add = c(0.7, 0.7))
+    expand = expansion(add = c(0.8, 0.8))
   ) +
 
   scale_x_continuous(
     limits = c(
-      0.0,
-      max(color_positions$dot_x) + 2.2
+      -1.2,
+      gene_panel_end
     ),
 
     breaks = c(
-      0.12,
+      contrast_x,
       2.82,
       mean(color_positions$dot_x),
-      max(color_positions$dot_x) + 0.80
+      gene_panel_start + 0.7
     ),
 
     labels = c(
-      "",
+      "Contrasts",
       "log2 Fold Enrichment",
       "Trends",
       "Top genes"
@@ -750,7 +673,7 @@ single_plot <- ggplot(
     panel.border = element_rect(
       color = "grey35",
       fill = NA,
-      linewidth = 0.6
+      linewidth = 0.7
     ),
 
     strip.placement = "outside",
@@ -758,7 +681,7 @@ single_plot <- ggplot(
     strip.background.y = element_rect(
       fill = "grey90",
       color = "grey35",
-      linewidth = 0.6
+      linewidth = 0.7
     ),
 
     strip.text.y.left = element_text(
@@ -766,7 +689,7 @@ single_plot <- ggplot(
       face = "bold",
       size = 10,
       color = "black",
-      margin = margin(3, 3, 3, 3)
+      margin = margin(4, 4, 4, 4)
     ),
 
     axis.text.y = element_blank(),
@@ -780,13 +703,13 @@ single_plot <- ggplot(
     ),
 
     plot.margin = margin(
-      12,
-      30,
-      12,
-      40
+      14,
+      35,
+      14,
+      85
     ),
 
-    panel.spacing.y = unit(0.30, "lines"),
+    panel.spacing.y = unit(0.45, "lines"),
 
     legend.position = "right",
 
@@ -810,7 +733,6 @@ png(
     "single_GO_summary_plot_compact.png"
   ),
 
-  # LANDSCAPE
   width = 5200,
   height = max(
     2200,
@@ -834,7 +756,6 @@ pdf(
     "single_GO_summary_plot_compact.pdf"
   ),
 
-  # LANDSCAPE
   width = 24,
   height = max(
     9,
