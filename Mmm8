@@ -451,14 +451,14 @@ glyph_shape_data <- group_trend_df %>%
 
 glyph_plot_data <- glyph_counts %>%
   left_join(
-    glyph_shape_data,
+    glyph_shape_data %>%
+      select(
+        hex_color,
+        point_index,
+        y_raw,
+        glyph_x
+      ),
     by = "hex_color"
-  ) %>%
-  group_by(
-    comparison,
-    facet,
-    go_term,
-    hex_color
   ) %>%
   mutate(
 
@@ -473,11 +473,22 @@ glyph_plot_data <- glyph_counts %>%
       to = c(-0.024, 0.024),
       from = c(
         1,
-        max(point_index)
+        max(point_index, na.rm = TRUE)
       )
     )
-  ) %>%
-  ungroup()
+  )
+
+# =========================================================
+# STABILIZE LINE WIDTHS
+# =========================================================
+
+glyph_plot_data <- glyph_plot_data %>%
+  mutate(
+    glyph_linewidth = scales::rescale(
+      glyph_count,
+      to = c(0.7, 2.8)
+    )
+  )
 
 # =========================================================
 # COMPARISON BRACKET LABELS
@@ -508,8 +519,8 @@ single_plot <- ggplot(
   geom_segment(
     data = comparison_brackets,
     aes(
-      x = 0.18,
-      xend = 0.18,
+      x = 0.22,
+      xend = 0.22,
       y = ymin,
       yend = ymax
     ),
@@ -520,8 +531,8 @@ single_plot <- ggplot(
   geom_segment(
     data = comparison_brackets,
     aes(
-      x = 0.18,
-      xend = 0.23,
+      x = 0.22,
+      xend = 0.28,
       y = ymin,
       yend = ymin
     ),
@@ -532,8 +543,8 @@ single_plot <- ggplot(
   geom_segment(
     data = comparison_brackets,
     aes(
-      x = 0.18,
-      xend = 0.23,
+      x = 0.22,
+      xend = 0.28,
       y = ymax,
       yend = ymax
     ),
@@ -545,7 +556,7 @@ single_plot <- ggplot(
   geom_text(
     data = comparison_brackets,
     aes(
-      x = 0.16,
+      x = 0.19,
       y = ymid,
       label = comparison_label
     ),
@@ -601,7 +612,7 @@ single_plot <- ggplot(
         hex_color
       ),
       color = hex_color,
-      linewidth = glyph_count
+      linewidth = glyph_linewidth
     ),
     lineend = "round",
     alpha = 1,
@@ -609,11 +620,6 @@ single_plot <- ggplot(
   ) +
 
   scale_color_identity() +
-
-  scale_linewidth_continuous(
-    range = c(0.5, 2.8),
-    guide = "none"
-  ) +
 
   # top genes
   ggtext::geom_richtext(
@@ -649,7 +655,7 @@ single_plot <- ggplot(
     ),
 
     breaks = c(
-      0.20,
+      0.25,
       1.34,
       mean(color_positions$glyph_x),
       max(color_positions$glyph_x) + 0.55
@@ -715,7 +721,7 @@ single_plot <- ggplot(
       8,
       14,
       8,
-      40
+      48
     ),
 
     panel.spacing.y = unit(0.22, "lines"),
