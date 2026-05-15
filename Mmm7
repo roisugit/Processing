@@ -29,8 +29,8 @@ facet_file <- "GO_facets.tsv"
 gene_color_file <- "gene_colors.tsv"
 
 # CSV:
-# Color,coordinates
-# #000000,0;5;3
+# Color,coordinates,Significance
+# #000000,0;0.7;-0.5,1;0;1
 group_trend_file <- "group_trends.csv"
 
 output_dir <- "heatmap_outputs"
@@ -98,11 +98,13 @@ group_trend_df <- read_csv(
 ) %>%
   rename(
     hex_color = Color,
-    coordinates = coordinates
+    coordinates = coordinates,
+    significance = Significance
   ) %>%
   mutate(
     hex_color = as.character(hex_color),
-    coordinates = as.character(coordinates)
+    coordinates = as.character(coordinates),
+    significance = as.character(significance)
   )
 
 # =========================================================
@@ -363,7 +365,7 @@ plot_data <- plot_data %>%
 # GLYPH HEADER PANEL
 # =========================================================
 
-glyph_panel_name <- "Group glyphs"
+glyph_panel_name <- "__GLYPHS__"
 
 glyph_panel <- tibble(
   facet = glyph_panel_name,
@@ -456,25 +458,14 @@ glyph_data <- group_trend_df %>%
   group_by(hex_color) %>%
   mutate(
 
-    # shared vertical scale for ALL glyphs
+    # fixed dramatic scale
     y_scaled = scales::rescale(
       y_raw,
-      to = c(0.82, 1.18),
-      from = c(
-        min(group_trend_df %>%
-              separate_rows(coordinates, sep = ";") %>%
-              pull(coordinates) %>%
-              as.numeric(),
-            na.rm = TRUE),
-        max(group_trend_df %>%
-              separate_rows(coordinates, sep = ";") %>%
-              pull(coordinates) %>%
-              as.numeric(),
-            na.rm = TRUE)
-      )
+      to = c(0.72, 1.28),
+      from = c(-1.5, 1.5)
     ),
 
-    # identical x-span for all glyphs
+    # identical width for all glyphs
     x_scaled = dot_x + scales::rescale(
       point_index,
       to = c(-0.016, 0.016),
@@ -487,6 +478,37 @@ glyph_data <- group_trend_df %>%
     facet = glyph_panel_name
   ) %>%
   ungroup()
+
+# =========================================================
+# GLYPH SIGNIFICANCE BARS
+# =========================================================
+
+glyph_sig_data <- group_trend_df %>%
+  separate(
+    significance,
+    into = c("sig12", "sig23", "sig13"),
+    sep = ";"
+  ) %>%
+  mutate(
+    sig12 = as.numeric(sig12),
+    sig23 = as.numeric(sig23),
+    sig13 = as.numeric(sig13)
+  ) %>%
+  left_join(
+    color_positions,
+    by = "hex_color"
+  ) %>%
+  mutate(
+
+    facet = glyph_panel_name,
+
+    y_sig1 = 1.34,
+    y_sig2 = 1.39,
+
+    x1 = dot_x - 0.016,
+    x2 = dot_x,
+    x3 = dot_x + 0.016
+  )
 
 # =========================================================
 # COMPARISON BRACKET LABELS
@@ -513,9 +535,18 @@ plot_data_final <- bind_rows(
   glyph_panel
 )
 
+# =========================================================
+# FACET ORDERING
+# =========================================================
+
 facet_levels <- c(
-  glyph_panel_name,
-  unique(plot_data$facet)
+  "__GLYPHS__",
+  sort(unique(plot_data$facet))
+)
+
+plot_data$facet <- factor(
+  plot_data$facet,
+  levels = facet_levels
 )
 
 plot_data_final$facet <- factor(
@@ -530,6 +561,11 @@ dot_data$facet <- factor(
 
 glyph_data$facet <- factor(
   glyph_data$facet,
+  levels = facet_levels
+)
+
+glyph_sig_data$facet <- factor(
+  glyph_sig_data$facet,
   levels = facet_levels
 )
 
@@ -643,7 +679,54 @@ single_plot <- ggplot(
       color = hex_color
     ),
     linewidth = 0.42,
-    alpha = 0.9,
+    alpha = 0.95,
+    inherit.aes = FALSE
+  ) +
+
+  scale_color_identity() +
+
+  # significance 1->2
+  geom_segment(
+    data = glyph_sig_data %>%
+      filter(sig12 == 1),
+    aes(
+      x = x1,
+      xend = x2,
+      y = y_sig1,
+      yend = y_sig1,
+      color = hex_color
+    ),
+    linewidth = 0.55,
+    inherit.aes = FALSE
+  ) +
+
+  # significance 2->3
+  geom_segment(
+    data = glyph_sig_data %>%
+      filter(sig23 == 1),
+    aes(
+      x = x2,
+      xend = x3,
+      y = y_sig1,
+      yend = y_sig1,
+      color = hex_color
+    ),
+    linewidth = 0.55,
+    inherit.aes = FALSE
+  ) +
+
+  # significance 1->3
+  geom_segment(
+    data = glyph_sig_data %>%
+      filter(sig13 == 1),
+    aes(
+      x = x1,
+      xend = x3,
+      y = y_sig2,
+      yend = y_sig2,
+      color = hex_color
+    ),
+    linewidth = 0.55,
     inherit.aes = FALSE
   ) +
 
@@ -689,7 +772,13 @@ single_plot <- ggplot(
     facet ~ .,
     scales = "free_y",
     space = "free_y",
-    switch = "y"
+    switch = "y",
+
+    labeller = labeller(
+      facet = c(
+        "__GLYPHS__" = ""
+      )
+    )
   ) +
 
   scale_y_continuous(
