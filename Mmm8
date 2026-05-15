@@ -363,6 +363,7 @@ dot_data <- merged %>%
 
 # =========================================================
 # COMPARISON SEPARATORS
+# No separator above first contrast
 # =========================================================
 
 comparison_lines <- plot_data %>%
@@ -373,26 +374,20 @@ comparison_lines <- plot_data %>%
   summarise(
     y_sep = max(y_pos) + 0.5,
     y_mid = mean(y_pos),
+    ymax = max(y_pos),
     .groups = "drop"
-  )
+  ) %>%
+  group_by(facet) %>%
+  arrange(desc(ymax)) %>%
 
-# =========================================================
-# SHARED Y SCALE
-# Prevent clipping + force alignment
-# =========================================================
+  # remove top separator
+  slice(-1) %>%
 
-shared_y_scale <- scale_y_continuous(
-  limits = c(
-    min(plot_data$y_pos) - 1.0,
-    max(plot_data$y_pos) + 1.0
-  ),
-
-  expand = c(0, 0)
-)
+  ungroup()
 
 # =========================================================
 # SHARED FACET
-# Critical for perfect alignment
+# Keeps perfect alignment
 # =========================================================
 
 shared_facet <- facet_grid(
@@ -416,11 +411,11 @@ panel_theme <- theme_minimal(base_size = 10) +
     axis.text.y = element_blank(),
     axis.ticks = element_blank(),
 
-    # REMOVE ALL X SCALE NUMBERS
+    # remove x scale numbers
     axis.text.x = element_blank(),
     axis.ticks.x = element_blank(),
 
-    # REMOVE INTERNAL PANEL MARGINS
+    # remove internal panel whitespace
     plot.margin = margin(
       0,
       0,
@@ -456,7 +451,7 @@ panel_theme <- theme_minimal(base_size = 10) +
       linewidth = 0.7
     ),
 
-    # KEEP BETWEEN PANEL SPACING
+    # keep between-panel spacing
     panel.spacing.y = unit(0.18, "lines")
   )
 
@@ -504,7 +499,9 @@ contrast_plot <- ggplot(
     expand = c(0, 0)
   ) +
 
-  shared_y_scale +
+  scale_y_continuous(
+    expand = expansion(add = c(1.0, 1.0))
+  ) +
 
   shared_facet +
 
@@ -553,7 +550,9 @@ go_term_plot <- ggplot(
     expand = c(0, 0)
   ) +
 
-  shared_y_scale +
+  scale_y_continuous(
+    expand = expansion(add = c(1.0, 1.0))
+  ) +
 
   shared_facet +
 
@@ -602,7 +601,9 @@ bar_plot <- ggplot(
     expand = expansion(mult = c(0, 0.03))
   ) +
 
-  shared_y_scale +
+  scale_y_continuous(
+    expand = expansion(add = c(1.0, 1.0))
+  ) +
 
   shared_facet +
 
@@ -654,7 +655,9 @@ trend_plot <- ggplot(
     expand = expansion(mult = c(0.06, 0.06))
   ) +
 
-  shared_y_scale +
+  scale_y_continuous(
+    expand = expansion(add = c(1.0, 1.0))
+  ) +
 
   shared_facet +
 
@@ -705,7 +708,9 @@ gene_plot <- ggplot(
     expand = c(0, 0)
   ) +
 
-  shared_y_scale +
+  scale_y_continuous(
+    expand = expansion(add = c(1.0, 1.0))
+  ) +
 
   shared_facet +
 
@@ -745,7 +750,7 @@ single_plot <-
 
 # =========================================================
 # SAVE PNG
-# Portrait mode + taller to prevent clipping
+# Portrait mode + adaptive facet heights
 # =========================================================
 
 png(
@@ -770,7 +775,7 @@ dev.off()
 
 # =========================================================
 # SAVE PDF
-# Portrait mode + taller to prevent clipping
+# Portrait mode + adaptive facet heights
 # =========================================================
 
 pdf(
