@@ -302,6 +302,14 @@ plot_data <- go_long %>%
     comparison,
     desc(abs_go_log2FC)
   ) %>%
+  group_by(
+    facet,
+    comparison_label
+  ) %>%
+  mutate(
+    comparison_row = row_number()
+  ) %>%
+  ungroup() %>%
   group_by(facet) %>%
   mutate(
     y_pos = rev(row_number())
@@ -354,11 +362,27 @@ dot_data <- merged %>%
   )
 
 # =========================================================
+# COMPARISON SEPARATORS
+# =========================================================
+
+comparison_lines <- plot_data %>%
+  group_by(
+    facet,
+    comparison_label
+  ) %>%
+  summarise(
+    y_sep = max(y_pos) + 0.5,
+    y_mid = mean(y_pos),
+    .groups = "drop"
+  )
+
+# =========================================================
 # COMMON THEME
 # =========================================================
 
 panel_theme <- theme_minimal(base_size = 10) +
   theme(
+
     panel.grid = element_blank(),
 
     axis.title = element_blank(),
@@ -366,23 +390,47 @@ panel_theme <- theme_minimal(base_size = 10) +
     axis.text.y = element_blank(),
     axis.ticks = element_blank(),
 
-    plot.margin = margin(2, 2, 2, 2),
+    # REMOVE ALL X SCALE NUMBERS
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
 
-    strip.background = element_rect(
+    plot.margin = margin(
+      3,
+      3,
+      3,
+      3
+    ),
+
+    strip.placement = "outside",
+
+    strip.background.y = element_rect(
       fill = "grey92",
-      color = "grey40"
+      color = "grey45",
+      linewidth = 0.7
     ),
 
-    strip.text = element_text(
+    # ONLY LEFTMOST FACET LABELS
+    strip.text.y.left = element_text(
+      angle = 90,
       face = "bold",
-      size = 10
+      size = 10,
+      margin = margin(
+        4,
+        4,
+        4,
+        4
+      )
     ),
+
+    strip.text.x = element_blank(),
 
     panel.border = element_rect(
       color = "grey75",
       fill = NA,
-      linewidth = 0.6
-    )
+      linewidth = 0.7
+    ),
+
+    panel.spacing.y = unit(0.18, "lines")
   )
 
 # =========================================================
@@ -398,37 +446,47 @@ contrast_plot <- ggplot(
 ) +
 
   geom_text(
-    aes(label = comparison_label),
+    data = plot_data %>%
+      group_by(
+        facet,
+        comparison_label
+      ) %>%
+      summarise(
+        y_pos = mean(y_pos),
+        .groups = "drop"
+      ),
+
+    aes(
+      label = comparison_label
+    ),
+
     hjust = 1,
     fontface = "bold",
-    size = 2.8
+    size = 2.9
   ) +
 
   geom_hline(
-    data = plot_data %>%
-      group_by(facet, comparison_label) %>%
-      summarise(
-        y = max(y_pos) + 0.5,
-        .groups = "drop"
-      ),
-    aes(yintercept = y),
+    data = comparison_lines,
+    aes(yintercept = y_sep),
     color = "grey82",
-    linetype = "dotted",
-    linewidth = 0.4
+    linewidth = 0.45,
+    linetype = "dotted"
   ) +
 
   scale_x_continuous(
-    limits = c(0, 1)
+    limits = c(0, 1.05),
+    expand = expansion(mult = c(0.02, 0.02))
   ) +
 
   scale_y_continuous(
-    expand = expansion(add = c(0.5, 0.5))
+    expand = expansion(add = c(0.7, 0.7))
   ) +
 
   facet_grid(
     facet ~ .,
     scales = "free_y",
-    space = "free_y"
+    space = "free_y",
+    switch = "y"
   ) +
 
   labs(x = "Contrasts") +
@@ -436,7 +494,7 @@ contrast_plot <- ggplot(
   panel_theme +
 
   theme(
-    axis.text.x = element_text(
+    axis.title.x = element_text(
       face = "bold",
       size = 9
     )
@@ -457,24 +515,38 @@ go_term_plot <- ggplot(
   geom_text(
     aes(label = go_term),
     hjust = 1,
-    size = 2.5
+    size = 2.55,
+    lineheight = 0.92
+  ) +
+
+  geom_hline(
+    data = comparison_lines,
+    aes(yintercept = y_sep),
+    color = "grey82",
+    linewidth = 0.45,
+    linetype = "dotted"
   ) +
 
   scale_x_continuous(
-    limits = c(0, 1)
+    limits = c(-0.25, 1.03),
+    expand = expansion(mult = c(0.02, 0.16))
+  ) +
+
+  scale_y_continuous(
+    expand = expansion(add = c(0.7, 0.7))
   ) +
 
   facet_grid(
     facet ~ .,
     scales = "free_y",
-    space = "free_y"
+    space = "free_y",
+    switch = "y"
   ) +
 
   panel_theme +
 
   theme(
-    strip.text = element_blank(),
-    axis.text.x = element_blank()
+    strip.text.y.left = element_blank()
   )
 
 # =========================================================
@@ -495,8 +567,16 @@ bar_plot <- ggplot(
       yend = y_pos,
       color = abs_go_log2FC
     ),
-    linewidth = 5,
+    linewidth = 5.1,
     lineend = "round"
+  ) +
+
+  geom_hline(
+    data = comparison_lines,
+    aes(yintercept = y_sep),
+    color = "grey82",
+    linewidth = 0.45,
+    linetype = "dotted"
   ) +
 
   scale_color_gradient(
@@ -505,10 +585,19 @@ bar_plot <- ggplot(
     name = "log2 FE"
   ) +
 
+  scale_x_continuous(
+    expand = expansion(mult = c(0.04, 0.16))
+  ) +
+
+  scale_y_continuous(
+    expand = expansion(add = c(0.7, 0.7))
+  ) +
+
   facet_grid(
     facet ~ .,
     scales = "free_y",
-    space = "free_y"
+    space = "free_y",
+    switch = "y"
   ) +
 
   labs(x = "log2 Fold Enrichment") +
@@ -516,10 +605,7 @@ bar_plot <- ggplot(
   panel_theme +
 
   theme(
-    axis.text.x = element_text(
-      face = "bold",
-      size = 9
-    )
+    strip.text.y.left = element_blank()
   )
 
 # =========================================================
@@ -539,20 +625,37 @@ trend_plot <- ggplot(
       size = color_gene_count,
       color = hex_color
     ),
-    alpha = 0.95
+    alpha = 0.96
+  ) +
+
+  geom_hline(
+    data = comparison_lines,
+    aes(yintercept = y_sep),
+    color = "grey82",
+    linewidth = 0.45,
+    linetype = "dotted"
   ) +
 
   scale_color_identity() +
 
   scale_size_continuous(
-    range = c(2, 6),
+    range = c(2.3, 6.5),
     name = "Genes"
+  ) +
+
+  scale_x_continuous(
+    expand = expansion(mult = c(0.20, 0.20))
+  ) +
+
+  scale_y_continuous(
+    expand = expansion(add = c(0.7, 0.7))
   ) +
 
   facet_grid(
     facet ~ .,
     scales = "free_y",
-    space = "free_y"
+    space = "free_y",
+    switch = "y"
   ) +
 
   labs(x = "Trends") +
@@ -560,7 +663,7 @@ trend_plot <- ggplot(
   panel_theme +
 
   theme(
-    axis.text.x = element_blank()
+    strip.text.y.left = element_blank()
   )
 
 # =========================================================
@@ -580,17 +683,32 @@ gene_plot <- ggplot(
     hjust = 0,
     fill = NA,
     label.color = NA,
-    size = 2.4
+    size = 2.45,
+    lineheight = 1.08
+  ) +
+
+  geom_hline(
+    data = comparison_lines,
+    aes(yintercept = y_sep),
+    color = "grey82",
+    linewidth = 0.45,
+    linetype = "dotted"
   ) +
 
   scale_x_continuous(
-    limits = c(1, 2)
+    limits = c(1, 3.0),
+    expand = expansion(mult = c(0.01, 0.14))
+  ) +
+
+  scale_y_continuous(
+    expand = expansion(add = c(0.7, 0.7))
   ) +
 
   facet_grid(
     facet ~ .,
     scales = "free_y",
-    space = "free_y"
+    space = "free_y",
+    switch = "y"
   ) +
 
   labs(x = "Top genes") +
@@ -598,10 +716,7 @@ gene_plot <- ggplot(
   panel_theme +
 
   theme(
-    axis.text.x = element_text(
-      face = "bold",
-      size = 9
-    )
+    strip.text.y.left = element_blank()
   )
 
 # =========================================================
@@ -614,8 +729,15 @@ single_plot <-
   bar_plot +
   trend_plot +
   gene_plot +
+
   plot_layout(
-    widths = c(0.9, 3.6, 1.6, 1.1, 3.2),
+    widths = c(
+      1.0,  # contrasts
+      5.2,  # GO terms
+      2.1,  # bars
+      1.5,  # trends
+      5.8   # genes
+    ),
     guides = "collect"
   ) &
 
@@ -632,11 +754,13 @@ png(
     output_dir,
     "single_GO_summary_plot_patchwork.png"
   ),
-  width = 5200,
+
+  width = 6800,
   height = max(
-    2200,
-    54 * nrow(plot_data)
+    2400,
+    58 * nrow(plot_data)
   ),
+
   res = 260
 )
 
@@ -653,10 +777,11 @@ pdf(
     output_dir,
     "single_GO_summary_plot_patchwork.pdf"
   ),
-  width = 24,
+
+  width = 30,
   height = max(
-    8,
-    0.28 * nrow(plot_data)
+    9,
+    0.30 * nrow(plot_data)
   )
 )
 
