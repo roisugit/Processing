@@ -53,26 +53,38 @@ FACET_GROUP_COL <- 2
 # LOAD FACETS
 # =========================================================
 
-facet_df <- read_tsv(
+facet_raw <- read_tsv(
   facet_file,
   show_col_types = FALSE
-) %>%
+)
+
+facet_df <- facet_raw %>%
   transmute(
-    go_term = as.character(.data[[FACET_GO_TERM_COL]]),
-    facet = as.character(.data[[FACET_GROUP_COL]])
+    go_term = as.character(
+      .data[[names(facet_raw)[FACET_GO_TERM_COL]]]
+    ),
+    facet = as.character(
+      .data[[names(facet_raw)[FACET_GROUP_COL]]]
+    )
   )
 
 # =========================================================
 # LOAD GENE COLORS
 # =========================================================
 
-gene_color_df <- read_tsv(
+gene_color_raw <- read_tsv(
   gene_color_file,
   show_col_types = FALSE
-) %>%
+)
+
+gene_color_df <- gene_color_raw %>%
   transmute(
-    gene_id = as.character(.data[[1]]),
-    hex_color = as.character(.data[[2]])
+    gene_id = as.character(
+      .data[[names(gene_color_raw)[1]]]
+    ),
+    hex_color = as.character(
+      .data[[names(gene_color_raw)[2]]]
+    )
   )
 
 # =========================================================
@@ -124,17 +136,27 @@ for (i in seq_len(nrow(datasets))) {
 
   gene_long <- gene_df %>%
     transmute(
-      gene_id = as.character(.data[[GENE_ID_COL]]),
-      gene_log2FC = as.numeric(.data[[GENE_LOG2FC_COL]])
+      gene_id = as.character(
+        .data[[names(gene_df)[GENE_ID_COL]]]
+      ),
+      gene_log2FC = as.numeric(
+        .data[[names(gene_df)[GENE_LOG2FC_COL]]]
+      )
     )
 
   gene_long_list[[dataset_name]] <- gene_long
 
   go_long <- go_df %>%
     transmute(
-      go_term = as.character(.data[[GO_TERM_COL]]),
-      gene_list = as.character(.data[[GO_GENES_COL]]),
-      go_log2FC = as.numeric(.data[[GO_LOG2FE_COL]]),
+      go_term = as.character(
+        .data[[names(go_df)[GO_TERM_COL]]]
+      ),
+      gene_list = as.character(
+        .data[[names(go_df)[GO_GENES_COL]]]
+      ),
+      go_log2FC = as.numeric(
+        .data[[names(go_df)[GO_LOG2FE_COL]]]
+      ),
       comparison = comparison
     ) %>%
     mutate(
@@ -145,26 +167,31 @@ for (i in seq_len(nrow(datasets))) {
       )
     ) %>%
     filter(
+      !is.na(go_log2FC),
+      is.finite(go_log2FC),
       abs(go_log2FC) >= GO_LOG2FE_THRESHOLD
     )
 
   go_long_list[[dataset_name]] <- go_long %>%
     select(-gene_list)
 
-  go_gene_list[[dataset_name]] <- go_long %>%
+  go_gene_links <- go_long %>%
     separate_rows(gene_list, sep = ",") %>%
     mutate(
       gene_id = str_trim(gene_list)
     ) %>%
     filter(
+      !is.na(gene_id),
       gene_id != "",
-      !is.na(gene_id)
+      tolower(gene_id) != "nan"
     ) %>%
     select(
       comparison,
       go_term,
       gene_id
     )
+
+  go_gene_list[[dataset_name]] <- go_gene_links
 }
 
 # =========================================================
@@ -333,20 +360,28 @@ dot_data <- merged %>%
 panel_theme <- theme_minimal(base_size = 10) +
   theme(
     panel.grid = element_blank(),
+
     axis.title = element_blank(),
+
     axis.text.y = element_blank(),
     axis.ticks = element_blank(),
+
     plot.margin = margin(2, 2, 2, 2),
+
     strip.background = element_rect(
       fill = "grey92",
       color = "grey40"
     ),
+
     strip.text = element_text(
-      face = "bold"
+      face = "bold",
+      size = 10
     ),
+
     panel.border = element_rect(
-      color = "grey70",
-      fill = NA
+      color = "grey75",
+      fill = NA,
+      linewidth = 0.6
     )
   )
 
@@ -402,7 +437,8 @@ contrast_plot <- ggplot(
 
   theme(
     axis.text.x = element_text(
-      face = "bold"
+      face = "bold",
+      size = 9
     )
   )
 
@@ -481,7 +517,8 @@ bar_plot <- ggplot(
 
   theme(
     axis.text.x = element_text(
-      face = "bold"
+      face = "bold",
+      size = 9
     )
   )
 
@@ -562,7 +599,8 @@ gene_plot <- ggplot(
 
   theme(
     axis.text.x = element_text(
-      face = "bold"
+      face = "bold",
+      size = 9
     )
   )
 
@@ -577,7 +615,7 @@ single_plot <-
   trend_plot +
   gene_plot +
   plot_layout(
-    widths = c(0.8, 3.2, 1.5, 1.1, 3.0),
+    widths = c(0.9, 3.6, 1.6, 1.1, 3.2),
     guides = "collect"
   ) &
 
