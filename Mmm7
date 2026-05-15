@@ -257,12 +257,12 @@ top_gene_labels <- merged %>%
       hex_color
     ),
 
-    color_dot = ifelse(
+    color_square = ifelse(
       !is.na(hex_color),
       paste0(
         "<span style='color:",
         gene_color,
-        "; font-size:13pt;'>●</span>"
+        "; font-size:11pt;'>■</span>"
       ),
       ""
     ),
@@ -274,7 +274,7 @@ top_gene_labels <- merged %>%
           "<b><i>",
           gene_id,
           "</i></b> ",
-          color_dot
+          color_square
         ),
 
       TRUE ~
@@ -282,7 +282,7 @@ top_gene_labels <- merged %>%
           "<i>",
           gene_id,
           "</i> ",
-          color_dot
+          color_square
         )
     )
   ) %>%
@@ -360,6 +360,17 @@ plot_data <- plot_data %>%
   )
 
 # =========================================================
+# GLYPH HEADER PANEL
+# =========================================================
+
+glyph_panel_name <- "Group glyphs"
+
+glyph_panel <- tibble(
+  facet = glyph_panel_name,
+  y_pos = 1
+)
+
+# =========================================================
 # BAR POSITIONS
 # =========================================================
 
@@ -427,13 +438,10 @@ dot_data <- merged %>%
   )
 
 # =========================================================
-# GLOBAL SPARKLINE DATA
+# GLYPH DATA
 # =========================================================
 
-global_sparkline_ymin <- max(plot_data$y_pos) + 1.2
-global_sparkline_ymax <- max(plot_data$y_pos) + 2.0
-
-sparkline_data <- group_trend_df %>%
+glyph_data <- group_trend_df %>%
   separate_rows(coordinates, sep = ";") %>%
   group_by(hex_color) %>%
   mutate(
@@ -448,18 +456,35 @@ sparkline_data <- group_trend_df %>%
   group_by(hex_color) %>%
   mutate(
 
+    # shared vertical scale for ALL glyphs
     y_scaled = scales::rescale(
       y_raw,
-      to = c(
-        global_sparkline_ymin,
-        global_sparkline_ymax
+      to = c(0.82, 1.18),
+      from = c(
+        min(group_trend_df %>%
+              separate_rows(coordinates, sep = ";") %>%
+              pull(coordinates) %>%
+              as.numeric(),
+            na.rm = TRUE),
+        max(group_trend_df %>%
+              separate_rows(coordinates, sep = ";") %>%
+              pull(coordinates) %>%
+              as.numeric(),
+            na.rm = TRUE)
       )
     ),
 
+    # identical x-span for all glyphs
     x_scaled = dot_x + scales::rescale(
       point_index,
-      to = c(-0.016, 0.016)
-    )
+      to = c(-0.016, 0.016),
+      from = c(
+        1,
+        max(point_index)
+      )
+    ),
+
+    facet = glyph_panel_name
   ) %>%
   ungroup()
 
@@ -480,11 +505,45 @@ comparison_brackets <- plot_data %>%
   )
 
 # =========================================================
+# FINAL PLOT DATA
+# =========================================================
+
+plot_data_final <- bind_rows(
+  plot_data,
+  glyph_panel
+)
+
+facet_levels <- c(
+  glyph_panel_name,
+  unique(plot_data$facet)
+)
+
+plot_data_final$facet <- factor(
+  plot_data_final$facet,
+  levels = facet_levels
+)
+
+dot_data$facet <- factor(
+  dot_data$facet,
+  levels = facet_levels
+)
+
+glyph_data$facet <- factor(
+  glyph_data$facet,
+  levels = facet_levels
+)
+
+comparison_brackets$facet <- factor(
+  comparison_brackets$facet,
+  levels = facet_levels
+)
+
+# =========================================================
 # SINGLE PLOT
 # =========================================================
 
 single_plot <- ggplot(
-  plot_data,
+  plot_data_final,
   aes(y = y_pos)
 ) +
 
@@ -541,6 +600,7 @@ single_plot <- ggplot(
 
   # GO terms
   geom_text(
+    data = plot_data,
     aes(
       x = 0.92,
       y = y_pos,
@@ -553,6 +613,7 @@ single_plot <- ggplot(
 
   # enrichment bars
   geom_segment(
+    data = plot_data,
     aes(
       x = bar_x_start,
       xend = bar_x_end,
@@ -572,10 +633,9 @@ single_plot <- ggplot(
 
   ggnewscale::new_scale_color() +
 
-  # global sparklines
+  # glyphs
   geom_line(
-    data = sparkline_data %>%
-      mutate(facet = unique(plot_data$facet)[1]),
+    data = glyph_data,
     aes(
       x = x_scaled,
       y = y_scaled,
@@ -612,6 +672,7 @@ single_plot <- ggplot(
 
   # top genes
   ggtext::geom_richtext(
+    data = plot_data,
     aes(
       x = max(color_positions$dot_x) + 0.18,
       y = y_pos,
@@ -632,9 +693,9 @@ single_plot <- ggplot(
   ) +
 
   scale_y_continuous(
-    breaks = plot_data$y_pos,
-    labels = rep("", nrow(plot_data)),
-    expand = expansion(add = c(0.9, 2.4))
+    breaks = NULL,
+    labels = NULL,
+    expand = expansion(add = c(0.5, 0.5))
   ) +
 
   scale_x_continuous(
@@ -713,7 +774,7 @@ single_plot <- ggplot(
       35
     ),
 
-    panel.spacing.y = unit(0.28, "lines"),
+    panel.spacing.y = unit(0.22, "lines"),
 
     legend.position = "right",
 
