@@ -1,6 +1,6 @@
 # =========================================================
 # Compact polished GO summary plot
-# GO term | log2 Fold Enrichment | gene-group dots | top genes
+# GO term | log2 Fold Enrichment | gene-group columns | top genes
 # =========================================================
 
 library(tidyverse)
@@ -27,6 +27,11 @@ facet_file <- "GO_facets.tsv"
 # TSV:
 # gene_id    hex_color
 gene_color_file <- "gene_colors.tsv"
+
+# CSV:
+# Color,coordinates
+# #000000,0;5;3
+group_trend_file <- "group_trends.csv"
 
 output_dir <- "heatmap_outputs"
 dir.create(output_dir, showWarnings = FALSE)
@@ -81,6 +86,23 @@ gene_color_df <- read_tsv(
   mutate(
     gene_id = as.character(gene_id),
     hex_color = as.character(hex_color)
+  )
+
+# =========================================================
+# LOAD GROUP TRENDS
+# =========================================================
+
+group_trend_df <- read_csv(
+  group_trend_file,
+  show_col_types = FALSE
+) %>%
+  rename(
+    hex_color = Color,
+    coordinates = coordinates
+  ) %>%
+  mutate(
+    hex_color = as.character(hex_color),
+    coordinates = as.character(coordinates)
   )
 
 # =========================================================
@@ -247,7 +269,6 @@ top_gene_labels <- merged %>%
 
     gene_label = case_when(
 
-      # UNIQUE GENES
       go_occurrences == 1 ~
         paste0(
           "<b><i>",
@@ -256,7 +277,6 @@ top_gene_labels <- merged %>%
           color_dot
         ),
 
-      # NON-UNIQUE GENES
       TRUE ~
         paste0(
           "<i>",
@@ -360,8 +380,20 @@ plot_data <- plot_data %>%
   )
 
 # =========================================================
-# DOT PANEL DATA
+# FIXED COLOR COLUMNS
 # =========================================================
+
+color_levels <- merged %>%
+  filter(!is.na(hex_color)) %>%
+  distinct(hex_color) %>%
+  arrange(hex_color) %>%
+  pull(hex_color)
+
+color_positions <- tibble(
+  hex_color = color_levels,
+  color_index = seq_along(color_levels),
+  dot_x = 1.82 + (seq_along(color_levels) - 1) * 0.05
+)
 
 dot_data <- merged %>%
   filter(!is.na(hex_color)) %>%
@@ -389,16 +421,44 @@ dot_data <- merged %>%
       "go_term"
     )
   ) %>%
-  group_by(
-    comparison,
-    facet,
-    go_term
-  ) %>%
-  arrange(hex_color, .by_group = TRUE) %>%
-  mutate(
-    dot_index = row_number(),
+  left_join(
+    color_positions,
+    by = "hex_color"
+  )
 
-    dot_x = 1.82 + (dot_index - 1) * 0.032
+# =========================================================
+# SPARKLINE DATA
+# =========================================================
+
+sparkline_data <- group_trend_df %>%
+  separate_rows(coordinates, sep = ";") %>%
+  group_by(hex_color) %>%
+  mutate(
+
+    point_index = row_number(),
+
+    y_raw = as.numeric(coordinates)
+  ) %>%
+  ungroup() %>%
+  left_join(
+    color_positions,
+    by = "hex_color"
+  ) %>%
+  group_by(hex_color) %>%
+  mutate(
+
+    y_scaled = scales::rescale(
+      y_raw,
+      to = c(
+        max(plot_data$y_pos) + 1.8,
+        max(plot_data$y_pos) + 3.2
+      )
+    ),
+
+    x_scaled = dot_x + scales::rescale(
+      point_index,
+      to = c(-0.018, 0.018)
+    )
   ) %>%
   ungroup()
 
@@ -511,7 +571,32 @@ single_plot <- ggplot(
 
   ggnewscale::new_scale_color() +
 
-  # colored gene-group dots
+  # sparklines
+  geom_line(
+    data = sparkline_data,
+    aes(
+      x = x_scaled,
+      y = y_scaled,
+      group = hex_color
+    ),
+    color = sparkline_data$hex_color,
+    linewidth = 0.5,
+    inherit.aes = FALSE
+  ) +
+
+  # color markers above columns
+  geom_point(
+    data = color_positions,
+    aes(
+      x = dot_x,
+      y = max(plot_data$y_pos) + 3.7
+    ),
+    color = color_positions$hex_color,
+    size = 2,
+    inherit.aes = FALSE
+  ) +
+
+  # fixed color-column dots
   geom_point(
     data = dot_data,
     aes(
@@ -533,7 +618,7 @@ single_plot <- ggplot(
   # top genes
   ggtext::geom_richtext(
     aes(
-      x = 2.22,
+      x = max(color_positions$dot_x) + 0.18,
       y = y_pos,
       label = top_genes
     ),
@@ -554,17 +639,20 @@ single_plot <- ggplot(
   scale_y_continuous(
     breaks = plot_data$y_pos,
     labels = rep("", nrow(plot_data)),
-    expand = expansion(add = c(1.1, 1.1))
+    expand = expansion(add = c(1.1, 4.5))
   ) +
 
   scale_x_continuous(
-    limits = c(0.0, 3.7),
+    limits = c(
+      0.0,
+      max(color_positions$dot_x) + 1.0
+    ),
 
     breaks = c(
       0.10,
       1.22,
-      1.95,
-      2.85
+      mean(color_positions$dot_x),
+      max(color_positions$dot_x) + 0.45
     ),
 
     labels = c(
@@ -653,7 +741,7 @@ png(
     output_dir,
     "single_GO_summary_plot_compact.png"
   ),
-  width = 3200,
+  width = 3600,
   height = max(
     2200,
     65 * nrow(plot_data)
@@ -674,7 +762,7 @@ pdf(
     output_dir,
     "single_GO_summary_plot_compact.pdf"
   ),
-  width = 15,
+  width = 17,
   height = max(
     9,
     0.34 * nrow(plot_data)
