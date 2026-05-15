@@ -377,6 +377,32 @@ comparison_lines <- plot_data %>%
   )
 
 # =========================================================
+# SHARED Y SCALE
+# Prevent clipping + force alignment
+# =========================================================
+
+shared_y_scale <- scale_y_continuous(
+  limits = c(
+    min(plot_data$y_pos) - 1.0,
+    max(plot_data$y_pos) + 1.0
+  ),
+
+  expand = c(0, 0)
+)
+
+# =========================================================
+# SHARED FACET
+# Critical for perfect alignment
+# =========================================================
+
+shared_facet <- facet_grid(
+  facet ~ .,
+  scales = "free_y",
+  space = "free_y",
+  switch = "y"
+)
+
+# =========================================================
 # COMMON THEME
 # =========================================================
 
@@ -457,9 +483,7 @@ contrast_plot <- ggplot(
         .groups = "drop"
       ),
 
-    aes(
-      label = comparison_label
-    ),
+    aes(label = comparison_label),
 
     hjust = 1,
     fontface = "bold",
@@ -470,10 +494,8 @@ contrast_plot <- ggplot(
     data = comparison_lines,
     aes(yintercept = y_sep),
 
-    # DARKER
-    color = "grey60",
-
-    linewidth = 0.5,
+    color = "grey55",
+    linewidth = 0.55,
     linetype = "dotted"
   ) +
 
@@ -482,16 +504,9 @@ contrast_plot <- ggplot(
     expand = c(0, 0)
   ) +
 
-  scale_y_continuous(
-    expand = c(0, 0)
-  ) +
+  shared_y_scale +
 
-  facet_grid(
-    facet ~ .,
-    scales = "free_y",
-    space = "free_y",
-    switch = "y"
-  ) +
+  shared_facet +
 
   labs(x = "Contrasts") +
 
@@ -506,6 +521,7 @@ contrast_plot <- ggplot(
 
 # =========================================================
 # GO TERM PANEL
+# Reduced width (~35%)
 # =========================================================
 
 go_term_plot <- ggplot(
@@ -519,34 +535,27 @@ go_term_plot <- ggplot(
   geom_text(
     aes(label = go_term),
     hjust = 1,
-    size = 2.55,
-    lineheight = 0.92
+    size = 2.50,
+    lineheight = 0.90
   ) +
 
   geom_hline(
     data = comparison_lines,
     aes(yintercept = y_sep),
 
-    color = "grey60",
-    linewidth = 0.5,
+    color = "grey55",
+    linewidth = 0.55,
     linetype = "dotted"
   ) +
 
   scale_x_continuous(
-    limits = c(-0.02, 1.01),
+    limits = c(0.20, 1.01),
     expand = c(0, 0)
   ) +
 
-  scale_y_continuous(
-    expand = c(0, 0)
-  ) +
+  shared_y_scale +
 
-  facet_grid(
-    facet ~ .,
-    scales = "free_y",
-    space = "free_y",
-    switch = "y"
-  ) +
+  shared_facet +
 
   panel_theme +
 
@@ -560,9 +569,7 @@ go_term_plot <- ggplot(
 
 bar_plot <- ggplot(
   plot_data,
-  aes(
-    y = y_pos
-  )
+  aes(y = y_pos)
 ) +
 
   geom_segment(
@@ -580,8 +587,8 @@ bar_plot <- ggplot(
     data = comparison_lines,
     aes(yintercept = y_sep),
 
-    color = "grey60",
-    linewidth = 0.5,
+    color = "grey55",
+    linewidth = 0.55,
     linetype = "dotted"
   ) +
 
@@ -592,19 +599,12 @@ bar_plot <- ggplot(
   ) +
 
   scale_x_continuous(
-    expand = expansion(mult = c(0, 0.04))
+    expand = expansion(mult = c(0, 0.03))
   ) +
 
-  scale_y_continuous(
-    expand = c(0, 0)
-  ) +
+  shared_y_scale +
 
-  facet_grid(
-    facet ~ .,
-    scales = "free_y",
-    space = "free_y",
-    switch = "y"
-  ) +
+  shared_facet +
 
   labs(x = "log2 Fold Enrichment") +
 
@@ -638,8 +638,8 @@ trend_plot <- ggplot(
     data = comparison_lines,
     aes(yintercept = y_sep),
 
-    color = "grey60",
-    linewidth = 0.5,
+    color = "grey55",
+    linewidth = 0.55,
     linetype = "dotted"
   ) +
 
@@ -651,19 +651,12 @@ trend_plot <- ggplot(
   ) +
 
   scale_x_continuous(
-    expand = expansion(mult = c(0.08, 0.08))
+    expand = expansion(mult = c(0.06, 0.06))
   ) +
 
-  scale_y_continuous(
-    expand = c(0, 0)
-  ) +
+  shared_y_scale +
 
-  facet_grid(
-    facet ~ .,
-    scales = "free_y",
-    space = "free_y",
-    switch = "y"
-  ) +
+  shared_facet +
 
   labs(x = "Trends") +
 
@@ -675,6 +668,7 @@ trend_plot <- ggplot(
 
 # =========================================================
 # TOP GENES PANEL
+# Reduced width (~35%)
 # =========================================================
 
 gene_plot <- ggplot(
@@ -687,37 +681,33 @@ gene_plot <- ggplot(
 
   ggtext::geom_richtext(
     aes(label = top_genes),
+
     hjust = 0,
+
     fill = NA,
     label.color = NA,
-    size = 2.45,
-    lineheight = 1.08
+
+    size = 2.35,
+    lineheight = 1.06
   ) +
 
   geom_hline(
     data = comparison_lines,
     aes(yintercept = y_sep),
 
-    color = "grey60",
-    linewidth = 0.5,
+    color = "grey55",
+    linewidth = 0.55,
     linetype = "dotted"
   ) +
 
   scale_x_continuous(
-    limits = c(1, 2.6),
+    limits = c(1, 2.05),
     expand = c(0, 0)
   ) +
 
-  scale_y_continuous(
-    expand = c(0, 0)
-  ) +
+  shared_y_scale +
 
-  facet_grid(
-    facet ~ .,
-    scales = "free_y",
-    space = "free_y",
-    switch = "y"
-  ) +
+  shared_facet +
 
   labs(x = "Top genes") +
 
@@ -740,11 +730,11 @@ single_plot <-
 
   plot_layout(
     widths = c(
-      0.9,
-      4.2,
-      1.8,
-      1.3,
-      4.7
+      0.9,  # contrasts
+      2.7,  # GO terms
+      1.8,  # bars
+      1.3,  # trends
+      3.0   # genes
     ),
     guides = "collect"
   ) &
@@ -755,7 +745,7 @@ single_plot <-
 
 # =========================================================
 # SAVE PNG
-# PORTRAIT MODE
+# Portrait mode + taller to prevent clipping
 # =========================================================
 
 png(
@@ -764,10 +754,11 @@ png(
     "single_GO_summary_plot_patchwork.png"
   ),
 
-  width = 4200,
+  width = 3800,
+
   height = max(
-    3200,
-    72 * nrow(plot_data)
+    4200,
+    86 * nrow(plot_data)
   ),
 
   res = 260
@@ -779,7 +770,7 @@ dev.off()
 
 # =========================================================
 # SAVE PDF
-# PORTRAIT MODE
+# Portrait mode + taller to prevent clipping
 # =========================================================
 
 pdf(
@@ -788,10 +779,11 @@ pdf(
     "single_GO_summary_plot_patchwork.pdf"
   ),
 
-  width = 18,
+  width = 16,
+
   height = max(
-    12,
-    0.38 * nrow(plot_data)
+    15,
+    0.46 * nrow(plot_data)
   )
 )
 
