@@ -434,9 +434,7 @@ sparkline_data <- group_trend_df %>%
   separate_rows(coordinates, sep = ";") %>%
   group_by(hex_color) %>%
   mutate(
-
     point_index = row_number(),
-
     y_raw = as.numeric(coordinates)
   ) %>%
   ungroup() %>%
@@ -538,7 +536,7 @@ single_plot <- ggplot(
     inherit.aes = FALSE
   ) +
 
-  # GO term
+  # GO terms
   geom_text(
     aes(
       x = 0.92,
@@ -550,7 +548,7 @@ single_plot <- ggplot(
     lineheight = 0.78
   ) +
 
-  # log2FE bar
+  # enrichment bars
   geom_segment(
     aes(
       x = bar_x_start,
@@ -577,24 +575,28 @@ single_plot <- ggplot(
     aes(
       x = x_scaled,
       y = y_scaled,
-      group = hex_color
+      group = hex_color,
+      color = hex_color
     ),
-    color = sparkline_data$hex_color,
     linewidth = 0.5,
     inherit.aes = FALSE
   ) +
+
+  scale_color_identity() +
 
   # color markers above columns
   geom_point(
     data = color_positions,
     aes(
       x = dot_x,
-      y = max(plot_data$y_pos) + 3.7
+      y = max(plot_data$y_pos) + 3.7,
+      color = hex_color
     ),
-    color = color_positions$hex_color,
     size = 2,
     inherit.aes = FALSE
   ) +
+
+  scale_color_identity() +
 
   # fixed color-column dots
   geom_point(
@@ -602,13 +604,15 @@ single_plot <- ggplot(
     aes(
       x = dot_x,
       y = y_pos,
-      size = color_gene_count
+      size = color_gene_count,
+      color = hex_color
     ),
     shape = 16,
-    color = dot_data$hex_color,
     stroke = 0,
     alpha = 0.98
   ) +
+
+  scale_color_identity() +
 
   scale_size_continuous(
     name = "Genes per group",
