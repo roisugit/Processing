@@ -104,7 +104,10 @@ group_trend_df <- read_csv(
   mutate(
     hex_color = as.character(hex_color),
     coordinates = as.character(coordinates),
-    significance = as.character(significance)
+    significance = as.character(significance),
+
+    # preserve input order
+    color_order = row_number()
   )
 
 # =========================================================
@@ -315,10 +318,11 @@ plot_data <- go_long %>%
     top_genes = replace_na(top_genes, ""),
     abs_go_log2FC = abs(go_log2FC),
 
-    comparison_label = str_replace(
-      comparison,
-      "comparison_",
-      "comm"
+    comparison_label = case_when(
+      comparison == "comparison_1" ~ "D2 v D0",
+      comparison == "comparison_2" ~ "D7 v D0",
+      comparison == "comparison_3" ~ "D7 v D2",
+      TRUE ~ comparison
     )
   ) %>%
   arrange(
@@ -396,17 +400,13 @@ plot_data <- plot_data %>%
 # FIXED COLOR COLUMNS
 # =========================================================
 
-color_levels <- merged %>%
-  filter(!is.na(hex_color)) %>%
-  distinct(hex_color) %>%
-  arrange(hex_color) %>%
-  pull(hex_color)
-
-color_positions <- tibble(
-  hex_color = color_levels,
-  color_index = seq_along(color_levels),
-  dot_x = 1.82 + (seq_along(color_levels) - 1) * 0.05
-)
+color_positions <- group_trend_df %>%
+  arrange(color_order) %>%
+  transmute(
+    hex_color,
+    color_index = row_number(),
+    dot_x = 1.82 + (row_number() - 1) * 0.05
+  )
 
 dot_data <- merged %>%
   filter(!is.na(hex_color)) %>%
@@ -461,14 +461,14 @@ glyph_data <- group_trend_df %>%
     # fixed dramatic scale
     y_scaled = scales::rescale(
       y_raw,
-      to = c(0.72, 1.28),
+      to = c(0.70, 1.30),
       from = c(-1.5, 1.5)
     ),
 
     # identical width for all glyphs
     x_scaled = dot_x + scales::rescale(
       point_index,
-      to = c(-0.016, 0.016),
+      to = c(-0.018, 0.018),
       from = c(
         1,
         max(point_index)
@@ -478,37 +478,6 @@ glyph_data <- group_trend_df %>%
     facet = glyph_panel_name
   ) %>%
   ungroup()
-
-# =========================================================
-# GLYPH SIGNIFICANCE BARS
-# =========================================================
-
-glyph_sig_data <- group_trend_df %>%
-  separate(
-    significance,
-    into = c("sig12", "sig23", "sig13"),
-    sep = ";"
-  ) %>%
-  mutate(
-    sig12 = as.numeric(sig12),
-    sig23 = as.numeric(sig23),
-    sig13 = as.numeric(sig13)
-  ) %>%
-  left_join(
-    color_positions,
-    by = "hex_color"
-  ) %>%
-  mutate(
-
-    facet = glyph_panel_name,
-
-    y_sig1 = 1.34,
-    y_sig2 = 1.39,
-
-    x1 = dot_x - 0.016,
-    x2 = dot_x,
-    x3 = dot_x + 0.016
-  )
 
 # =========================================================
 # COMPARISON BRACKET LABELS
@@ -561,11 +530,6 @@ dot_data$facet <- factor(
 
 glyph_data$facet <- factor(
   glyph_data$facet,
-  levels = facet_levels
-)
-
-glyph_sig_data$facet <- factor(
-  glyph_sig_data$facet,
   levels = facet_levels
 )
 
@@ -669,7 +633,7 @@ single_plot <- ggplot(
 
   ggnewscale::new_scale_color() +
 
-  # glyphs
+  # bold glyphs
   geom_line(
     data = glyph_data,
     aes(
@@ -678,55 +642,9 @@ single_plot <- ggplot(
       group = hex_color,
       color = hex_color
     ),
-    linewidth = 0.42,
-    alpha = 0.95,
-    inherit.aes = FALSE
-  ) +
-
-  scale_color_identity() +
-
-  # significance 1->2
-  geom_segment(
-    data = glyph_sig_data %>%
-      filter(sig12 == 1),
-    aes(
-      x = x1,
-      xend = x2,
-      y = y_sig1,
-      yend = y_sig1,
-      color = hex_color
-    ),
-    linewidth = 0.55,
-    inherit.aes = FALSE
-  ) +
-
-  # significance 2->3
-  geom_segment(
-    data = glyph_sig_data %>%
-      filter(sig23 == 1),
-    aes(
-      x = x2,
-      xend = x3,
-      y = y_sig1,
-      yend = y_sig1,
-      color = hex_color
-    ),
-    linewidth = 0.55,
-    inherit.aes = FALSE
-  ) +
-
-  # significance 1->3
-  geom_segment(
-    data = glyph_sig_data %>%
-      filter(sig13 == 1),
-    aes(
-      x = x1,
-      xend = x3,
-      y = y_sig2,
-      yend = y_sig2,
-      color = hex_color
-    ),
-    linewidth = 0.55,
+    linewidth = 1.15,
+    alpha = 1,
+    lineend = "round",
     inherit.aes = FALSE
   ) +
 
