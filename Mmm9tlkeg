@@ -1,76 +1,80 @@
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 import urllib.parse
-import re
+import webbrowser
 
-def highlight_kegg_pathway(map_id, ec_string, row_num):
-    print(f"\n=== Row {row_num} ===")
-    print(f"Pathway ID = {map_id}")
-    print(f"Raw EC string (column 8) = '{ec_string}'")
+# ====================== USER CONFIGURATION ======================
+tsv_file = "your_data.tsv"   # ←←← change to your actual TSV path
+
+# Two groups of organisms (edit these lists)
+group1_organisms = ["organism_name_1", "organism_name_2"]   # ← red highlights
+group2_organisms = ["organism_name_3"]                      # ← blue highlights
+# (groups can have 1 or many organisms)
+
+# List of pathway map IDs you want to process
+map_ids = ["map00010", "map00020", "map00030"]             # ← add/remove as needed
+
+# ====================== SCRIPT ======================
+df = pd.read_csv(tsv_file, sep='\t', header=0)
+
+print("=== KEGG Group Comparison Highlighter ===\n")
+print(f"Group 1 (red)  : {group1_organisms}")
+print(f"Group 2 (blue) : {group2_organisms}")
+print(f"Processing {len(map_ids)} map IDs\n")
+
+for map_id in map_ids:
+    print(f"→ Processing map: {map_id}")
     
-    # Split and clean every single item
-    raw_items = [x.strip() for x in str(ec_string).split(';') if str(x).strip()]
-    print(f"Split items ({len(raw_items)}): {raw_items}")
+    # Filter rows for this map_id
+    sub = df[df.iloc[:, 1].astype(str).str.strip() == map_id.strip()]
+    if sub.empty:
+        print(f"   No rows found for {map_id}")
+        continue
     
-    # ULTRA-STRICT EC filter: ONLY full EC numbers like "1.2.3.4" (exactly 3 dots, 4 numbers, no "-")
-    ec_list = []
-    for item in raw_items:
-        # Remove common prefixes
-        cleaned = item.upper().replace("EC:", "").replace("EC ", "").strip()
+    # Collect unique ECs per group
+    ec_set1 = set()
+    ec_set2 = set()
+    
+    for _, row in sub.iterrows():
+        org = str(row.iloc[0]).strip()
+        ec_string = str(row.iloc[7])
+        ecs = {ec.strip() for ec in ec_string.split(';') if ec.strip()}
         
-        # Strict regex: must be exactly N.N.N.N where each N is 1-2 digits
-        if re.match(r'^\d{1,2}\.\d{1,2}\.\d{1,2}\.\d{1,2}$', cleaned) and '-' not in cleaned:
-            ec_list.append(cleaned)
-        else:
-            print(f"   REJECTED: '{item}' → does not match full EC pattern")
+        if org in group1_organisms:
+            ec_set1.update(ecs)
+        if org in group2_organisms:
+            ec_set2.update(ecs)
     
-    ec_list = list(dict.fromkeys(ec_list))  # remove duplicates
-    print(f"FINAL ECs that will be highlighted ({len(ec_list)}): {ec_list}")
+    # Compute colors
+    only1 = ec_set1 - ec_set2
+    only2 = ec_set2 - ec_set1
+    overlap = ec_set1 & ec_set2
     
-    if not ec_list:
-        print("   → Skipping: no valid full EC numbers found")
-        return
+    print(f"   Group1 ECs: {len(only1) + len(overlap)}")
+    print(f"   Group2 ECs: {len(only2) + len(overlap)}")
+    print(f"   Overlap   : {len(overlap)}")
     
-    # Force EC-specific map (this is the correct one for EC highlighting)
-    if map_id.startswith('map'):
-        target_map = 'ec' + map_id[3:]
-    else:
-        target_map = map_id
-    print(f"Using map: {target_map}")
+    if not only1 and not only2 and not overlap:
+        print("   No ECs to highlight")
+        continue
     
-    # Bright yellow + black text (very visible)
-    color_spec = "yellow,black"
-    query_parts = [f"{ec}+{color_spec}" for ec in ec_list]
+    # Build multi_query (EC+color,fgcolor)
+    query_parts = []
+    for ec in only1:
+        query_parts.append(f"{ec}+red,white")
+    for ec in only2:
+        query_parts.append(f"{ec}+blue,white")
+    for ec in overlap:
+        query_parts.append(f"{ec}+purple,white")
+    
     multi_query = "\r\n".join(query_parts)
     
-    params = {'map': target_map, 'multi_query': multi_query}
+    # Build colored KEGG URL
+    params = {'map': map_id, 'multi_query': multi_query}
     full_url = "https://www.kegg.jp/kegg-bin/show_pathway?" + urllib.parse.urlencode(params)
-    print(f"Colored URL: {full_url}")
+    print(f"   Colored URL: {full_url}")
     
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get("https://www.kegg.jp/kegg-bin/show_pathway", params=params, headers=headers)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    img = soup.find('img', attrs={'usemap': True})
-    if not img:
-        img = soup.find('img', src=lambda x: x and '.png' in str(x).lower() if x else False)
-    
-    if img and img.get('src'):
-        img_src = img['src']
-        if not img_src.startswith('http'):
-            img_src = 'https://www.kegg.jp' + (img_src if img_src.startswith('/') else '/' + img_src)
-        output_file = f"{target_map}_highlighted.png"
-        img_data = requests.get(img_src, headers=headers).content
-        with open(output_file, 'wb') as f:
-            f.write(img_data)
-        print(f"   ✓ Saved: {output_file} (yellow highlight)\n")
-    else:
-        print(f"   ✗ Could not retrieve image\n")
+    # Open in browser automatically
+    webbrowser.open(full_url)
+    print("   (opened in browser)\n")
 
-print("=== ULTRA-STRICT KEGG HIGHLIGHTER (First 3 rows only) ===\n")
-df = pd.read_csv("your_data.tsv", sep='\t')
-
-for i, row in df.head(3).iterrows():
-    map_id = str(row.iloc[1]).strip()
-    ec_string = row.iloc[7]
-    highlight_kegg_pathway(map_id, ec_string, i + 1)
+print("All done. Open the URLs above to see red/blue/purple highlights.")
