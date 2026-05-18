@@ -1,41 +1,62 @@
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import quote
+import urllib.parse
 
-def highlight_kegg_pathway(map_id, ec_string):
-    ec_list = [ec.strip() for ec in str(ec_string).split(';') if ec.strip()]
+def highlight_kegg_pathway(map_id, ec_string, row_num):
+    print(f"Row {row_num}: Pathway = {map_id}")
+    
+    # Print the raw EC string exactly as it appears in column 8
+    print(f"   Raw EC string (column 8): '{ec_string}'")
+    
+    # Clean and print the EC list being sent to KEGG
+    ec_list = [ec.strip() for ec in str(ec_string).split(';') if str(ec).strip()]
+    print(f"   Cleaned EC list ({len(ec_list)} items): {ec_list}")
+    
     if not ec_list:
-        print(f"Skipping {map_id}: no EC numbers")
+        print("   → Skipping: no valid EC numbers")
         return
+    
+    # Build query with high-visibility colors (yellow background + black text)
     query_parts = [f"{ec}+yellow,black" for ec in ec_list]
     multi_query = "\r\n".join(query_parts)
+    
+    # Build full colored URL (copy-paste this into your browser to verify)
     params = {'map': map_id, 'multi_query': multi_query}
-    full_url = "https://www.kegg.jp/kegg-bin/show_pathway?" + "&".join([f"{k}={quote(str(v))}" for k,v in params.items()])
-    print(f"  → Colored URL (open to verify): {full_url}")
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    full_url = "https://www.kegg.jp/kegg-bin/show_pathway?" + urllib.parse.urlencode(params)
+    print(f"   → Colored URL (open this to check highlighting): {full_url}")
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    # Fetch the KEGG page
     response = requests.get("https://www.kegg.jp/kegg-bin/show_pathway", params=params, headers=headers)
+    
     soup = BeautifulSoup(response.text, 'html.parser')
+    
+    # Find the main pathway image
     img = soup.find('img', attrs={'usemap': True})
     if not img:
         img = soup.find('img', src=lambda x: x and '.png' in str(x).lower() if x else False)
+    
     if img and img.get('src'):
         img_src = img['src']
         if not img_src.startswith('http'):
             img_src = 'https://www.kegg.jp' + (img_src if img_src.startswith('/') else '/' + img_src)
+        
         output_file = f"{map_id}_highlighted.png"
         img_data = requests.get(img_src, headers=headers).content
+        
         with open(output_file, 'wb') as f:
             f.write(img_data)
-        print(f"  ✓ Saved: {output_file}")
+        print(f"   ✓ Saved as: {output_file}\n")
     else:
-        print(f"  ✗ Could not locate image for {map_id}")
+        print(f"   ✗ Could not find image for {map_id}\n")
 
+# Main execution
+print("=== KEGG Highlight Script (First 3 rows only) ===\n")
 df = pd.read_csv("your_data.tsv", sep='\t')
-print("Processing first 3 rows only...\n")
+
 for i, row in df.head(3).iterrows():
     map_id = str(row.iloc[1]).strip()
-    ec_string = str(row.iloc[7])
-    print(f"Row {i+1} → {map_id}")
-    highlight_kegg_pathway(map_id, ec_string)
-    print("")
+    ec_string = row.iloc[7]
+    highlight_kegg_pathway(map_id, ec_string, i+1)
