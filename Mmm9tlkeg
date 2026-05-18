@@ -1,45 +1,41 @@
-library(httr)
-library(rvest)
-library(stringr)
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import quote
 
-download_highlighted_kegg_pathway <- function(map_id, ec_string, output_file = NULL) {
-  ec_list <- str_split(ec_string, ";")[[1]] |> str_trim()
-  ec_list <- ec_list[ec_list != ""]
-  if (length(ec_list) == 0) {
-    cat("Skipping:", map_id, "(no EC numbers)\n")
-    return()
-  }
-  query_lines <- paste0(ec_list, "+yellow,black")
-  multi_query <- paste(query_lines, collapse = "\r\n")
-  resp <- GET("https://www.kegg.jp/kegg-bin/show_pathway", 
-              query = list(map = map_id, multi_query = multi_query))
-  page <- read_html(resp)
-  img_node <- page %>% html_element("img[usemap]")
-  if (length(img_node) == 0) img_node <- page %>% html_element("img[src*='.png']")
-  img_src <- html_attr(img_node, "src")
-  if (!is.na(img_src)) {
-    if (!grepl("^http", img_src)) {
-      img_src <- paste0("https://www.kegg.jp", ifelse(substr(img_src, 1, 1) == "/", "", "/"), img_src)
-    }
-    if (is.null(output_file)) output_file <- paste0(map_id, "_highlighted.png")
-    download.file(img_src, output_file, mode = "wb", quiet = TRUE)
-    cat("Saved:", output_file, "\n")
-  } else {
-    cat("Failed to find image for", map_id, "\n")
-  }
-}
+def highlight_kegg_pathway(map_id, ec_string):
+    ec_list = [ec.strip() for ec in str(ec_string).split(';') if ec.strip()]
+    if not ec_list:
+        print(f"Skipping {map_id}: no EC numbers")
+        return
+    query_parts = [f"{ec}+yellow,black" for ec in ec_list]
+    multi_query = "\r\n".join(query_parts)
+    params = {'map': map_id, 'multi_query': multi_query}
+    full_url = "https://www.kegg.jp/kegg-bin/show_pathway?" + "&".join([f"{k}={quote(str(v))}" for k,v in params.items()])
+    print(f"  → Colored URL (open to verify): {full_url}")
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get("https://www.kegg.jp/kegg-bin/show_pathway", params=params, headers=headers)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    img = soup.find('img', attrs={'usemap': True})
+    if not img:
+        img = soup.find('img', src=lambda x: x and '.png' in str(x).lower() if x else False)
+    if img and img.get('src'):
+        img_src = img['src']
+        if not img_src.startswith('http'):
+            img_src = 'https://www.kegg.jp' + (img_src if img_src.startswith('/') else '/' + img_src)
+        output_file = f"{map_id}_highlighted.png"
+        img_data = requests.get(img_src, headers=headers).content
+        with open(output_file, 'wb') as f:
+            f.write(img_data)
+        print(f"  ✓ Saved: {output_file}")
+    else:
+        print(f"  ✗ Could not locate image for {map_id}")
 
-batch_highlight_from_tsv <- function(tsv_file) {
-  df <- read.delim(tsv_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE)
-  df_test <- head(df, 3)
-  for (i in seq_len(nrow(df_test))) {
-    map_id <- trimws(df_test[i, 2])
-    ec_string <- df_test[i, 8]
-    if (!is.na(map_id) && map_id != "") {
-      cat("Row", i, "->", map_id, "\n")
-      download_highlighted_kegg_pathway(map_id, ec_string)
-    }
-  }
-}
-
-batch_highlight_from_tsv("your_data.tsv")
+df = pd.read_csv("your_data.tsv", sep='\t')
+print("Processing first 3 rows only...\n")
+for i, row in df.head(3).iterrows():
+    map_id = str(row.iloc[1]).strip()
+    ec_string = str(row.iloc[7])
+    print(f"Row {i+1} → {map_id}")
+    highlight_kegg_pathway(map_id, ec_string)
+    print("")
