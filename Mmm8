@@ -1,15 +1,18 @@
 library(tidyverse)
 library(ggtext)
+library(scales)
 library(patchwork)
+library(cowplot)
+library(ggh4x)
 
 datasets <- tribble(
-  ~comparison, ~direction, ~go_file, ~gene_file,
-  "comparison_1", "up", "comp1_up_GO.csv", "comp1_up_genes.csv",
-  "comparison_1", "down", "", "",
-  "comparison_2", "up", "comp2_up_GO.csv", "comp2_up_genes.csv",
-  "comparison_2", "down", "comp2_down_GO.csv", "comp2_down_genes.csv",
-  "comparison_3", "up", "", "",
-  "comparison_3", "down", "comp3_down_GO.csv", "comp3_down_genes.csv"
+  ~comparison,    ~direction, ~go_file,              ~gene_file,
+  "comparison_1", "up",       "comp1_up_GO.csv",     "comp1_up_genes.csv",
+  "comparison_1", "down",     "",                    "",
+  "comparison_2", "up",       "comp2_up_GO.csv",     "comp2_up_genes.csv",
+  "comparison_2", "down",     "comp2_down_GO.csv",   "comp2_down_genes.csv",
+  "comparison_3", "up",       "",                    "",
+  "comparison_3", "down",     "comp3_down_GO.csv",   "comp3_down_genes.csv"
 )
 
 facet_file <- "GO_facets.tsv"
@@ -34,6 +37,7 @@ FACET_GO_TERM_COL <- 1
 FACET_GROUP_COL <- 2
 
 facet_raw <- read_tsv(facet_file, show_col_types = FALSE)
+
 facet_df <- facet_raw %>%
   transmute(
     go_term = as.character(.data[[names(facet_raw)[FACET_GO_TERM_COL]]]),
@@ -41,6 +45,7 @@ facet_df <- facet_raw %>%
   )
 
 gene_color_raw <- read_tsv(gene_color_file, show_col_types = FALSE)
+
 gene_color_df <- gene_color_raw %>%
   transmute(
     gene_id = as.character(.data[[names(gene_color_raw)[1]]]),
@@ -49,15 +54,7 @@ gene_color_df <- gene_color_raw %>%
 
 group_trend_df <- read_csv(group_trend_file, show_col_types = FALSE) %>%
   rename(hex_color = Color) %>%
-  mutate(
-    color_order = row_number(),
-    trend_group = case_when(
-      color_order <= 2 ~ "A",
-      color_order <= 4 ~ "A+L",
-      color_order <= 6 ~ "L",
-      TRUE ~ "P"
-    )
-  )
+  mutate(color_order = row_number())
 
 go_long_list <- list()
 gene_long_list <- list()
@@ -68,23 +65,23 @@ for (i in seq_len(nrow(datasets))) {
   direction <- datasets$direction[i]
   go_file <- datasets$go_file[i]
   gene_file <- datasets$gene_file[i]
-  
+
   if (is.na(go_file) || is.na(gene_file) || go_file == "" || gene_file == "") next
   if (!file.exists(go_file) || !file.exists(gene_file)) next
-  
+
   dataset_name <- paste(comparison, direction, sep = "_")
-  
+
   go_df <- read_csv(go_file, show_col_types = FALSE)
   gene_df <- read_csv(gene_file, show_col_types = FALSE)
-  
+
   gene_long <- gene_df %>%
     transmute(
       gene_id = as.character(.data[[names(gene_df)[GENE_ID_COL]]]),
       gene_log2FC = as.numeric(.data[[names(gene_df)[GENE_LOG2FC_COL]]])
     )
-  
+
   gene_long_list[[dataset_name]] <- gene_long
-  
+
   go_long <- go_df %>%
     transmute(
       go_term = as.character(.data[[names(go_df)[GO_TERM_COL]]]),
@@ -100,15 +97,15 @@ for (i in seq_len(nrow(datasets))) {
       )
     ) %>%
     filter(!is.na(go_log2FC), is.finite(go_log2FC), abs(go_log2FC) >= GO_LOG2FE_THRESHOLD)
-  
+
   go_long_list[[dataset_name]] <- go_long %>% select(-gene_list)
-  
+
   go_gene_links <- go_long %>%
     separate_rows(gene_list, sep = ",") %>%
     mutate(gene_id = str_trim(gene_list)) %>%
     filter(!is.na(gene_id), gene_id != "", tolower(gene_id) != "nan") %>%
     select(comparison, go_term, gene_id)
-  
+
   go_gene_list[[dataset_name]] <- go_gene_links
 }
 
@@ -140,9 +137,7 @@ top_gene_labels <- merged %>%
   left_join(gene_uniqueness, by = "gene_id") %>%
   mutate(
     square = ifelse(is.na(hex_color), "", paste0("<span style='color:", hex_color, ";'>■</span>")),
-    gene_label = ifelse(go_occurrences == 1,
-                        paste0("<b><i>", gene_id, "</i></b> ", square),
-                        paste0("<i>", gene_id, "</i> ", square))
+    gene_label = ifelse(go_occurrences == 1, paste0("<b><i>", gene_id, "</i></b> ", square), paste0("<i>", gene_id, "</i> ", square))
   ) %>%
   group_by(comparison, facet, go_term) %>%
   summarise(top_genes = paste(gene_label, collapse = ", "), .groups = "drop")
@@ -152,9 +147,9 @@ plot_data <- go_long %>%
   mutate(
     top_genes = replace_na(top_genes, ""),
     abs_go_log2FC = abs(go_log2FC),
-    comparison_label = recode(comparison,
-                              comparison_1 = "D2 v D0",
-                              comparison_2 = "D7 v D0",
+    comparison_label = recode(comparison, 
+                              comparison_1 = "D2 v D0", 
+                              comparison_2 = "D7 v D0", 
                               comparison_3 = "D7 v D2")
   ) %>%
   arrange(facet, comparison, desc(abs_go_log2FC)) %>%
@@ -167,30 +162,23 @@ plot_data <- go_long %>%
 
 color_positions <- group_trend_df %>%
   arrange(color_order) %>%
-  group_by(trend_group) %>%
   mutate(trend_x = row_number()) %>%
-  ungroup() %>%
-  select(hex_color, trend_x, trend_group)
+  select(hex_color, trend_x)
 
 dot_data <- merged %>%
   filter(!is.na(hex_color)) %>%
   group_by(comparison, facet, go_term, hex_color) %>%
   summarise(color_gene_count = n_distinct(gene_id), .groups = "drop") %>%
-  left_join(plot_data %>% select(comparison, facet, go_term, y_pos),
-            by = c("comparison", "facet", "go_term")) %>%
+  left_join(plot_data %>% select(comparison, facet, go_term, y_pos), by = c("comparison", "facet", "go_term")) %>%
   left_join(color_positions, by = "hex_color")
 
 comparison_lines <- plot_data %>%
   group_by(facet, comparison_label) %>%
-  summarise(y_sep = max(y_pos) + 0.5, ymax = max(y_pos), .groups = "drop") %>%
+  summarise(y_sep = max(y_pos) + 0.5, .groups = "drop") %>%
   group_by(facet) %>%
-  arrange(desc(ymax)) %>%
+  arrange(desc(y_sep)) %>%
   slice(-1) %>%
   ungroup()
-
-comparison_blocks <- plot_data %>%
-  group_by(facet, comparison_label) %>%
-  summarise(ymin = min(y_pos) - 0.45, ymax = max(y_pos) + 0.45, .groups = "drop")
 
 shared_facet <- facet_grid(facet ~ ., scales = "free_y", space = "free_y", switch = "y")
 
@@ -211,21 +199,19 @@ panel_theme <- theme_minimal(base_size = 10) +
     panel.spacing.y = unit(0.18, "lines")
   )
 
+dot_separators <- c(2.5, 4.5, 6.5)
+group_centers <- c(1.5, 3.5, 5.5, 9)
+group_names <- c("A", "A+L", "L", "P")
+
 contrast_plot <- ggplot(plot_data, aes(x = 1, y = y_pos)) +
-  geom_rect(data = comparison_blocks,
-            aes(xmin = -Inf, xmax = Inf, ymin = ymin, ymax = ymax),
-            fill = "grey92", color = NA, inherit.aes = FALSE) +
+  geom_blank() +
   geom_text(
-    data = plot_data %>%
-      group_by(facet, comparison_label) %>%
-      summarise(y_pos = mean(y_pos), .groups = "drop"),
-    aes(label = comparison_label, y = y_pos),
-    angle = 90, hjust = 0.5, vjust = 0.5,
-    fontface = "bold", size = 2.6
+    data = plot_data %>% group_by(facet, comparison_label) %>% summarise(y_pos = mean(y_pos), .groups = "drop"),
+    aes(x = 1, y = y_pos, label = comparison_label),
+    hjust = 1, fontface = "bold", size = 2.9
   ) +
-  geom_hline(data = comparison_lines, aes(yintercept = y_sep),
-             color = "grey55", linewidth = 0.55, linetype = "dotted") +
-  scale_x_continuous(limits = c(0.05, 1.15), expand = c(0, 0)) +
+  geom_hline(data = comparison_lines, aes(yintercept = y_sep), color = "grey55", linewidth = 0.55, linetype = "dotted") +
+  scale_x_continuous(limits = c(0.1, 1.05), expand = c(0, 0)) +
   scale_y_continuous(expand = expansion(add = c(1.0, 1.0))) +
   shared_facet +
   labs(x = "Contrasts") +
@@ -234,8 +220,7 @@ contrast_plot <- ggplot(plot_data, aes(x = 1, y = y_pos)) +
 
 go_term_plot <- ggplot(plot_data, aes(x = 1, y = y_pos)) +
   geom_text(aes(label = go_term), hjust = 1, size = 2.50, lineheight = 0.90) +
-  geom_hline(data = comparison_lines, aes(yintercept = y_sep),
-             color = "grey55", linewidth = 0.55, linetype = "dotted") +
+  geom_hline(data = comparison_lines, aes(yintercept = y_sep), color = "grey55", linewidth = 0.55, linetype = "dotted") +
   scale_x_continuous(limits = c(0.20, 1.01), expand = c(0, 0)) +
   scale_y_continuous(expand = expansion(add = c(1.0, 1.0))) +
   shared_facet +
@@ -243,10 +228,8 @@ go_term_plot <- ggplot(plot_data, aes(x = 1, y = y_pos)) +
   theme(strip.text.y.left = element_blank())
 
 bar_plot <- ggplot(plot_data, aes(y = y_pos)) +
-  geom_segment(aes(x = 0, xend = abs_go_log2FC, yend = y_pos, color = abs_go_log2FC),
-               linewidth = 5.1, lineend = "round") +
-  geom_hline(data = comparison_lines, aes(yintercept = y_sep),
-             color = "grey55", linewidth = 0.55, linetype = "dotted") +
+  geom_segment(aes(x = 0, xend = abs_go_log2FC, yend = y_pos, color = abs_go_log2FC), linewidth = 5.1, lineend = "round") +
+  geom_hline(data = comparison_lines, aes(yintercept = y_sep), color = "grey55", linewidth = 0.55, linetype = "dotted") +
   scale_color_gradient(low = "#B7D4F0", high = "#08306B", name = "log2 FE") +
   scale_x_continuous(expand = expansion(mult = c(0, 0.03))) +
   scale_y_continuous(expand = expansion(add = c(1.0, 1.0))) +
@@ -255,33 +238,26 @@ bar_plot <- ggplot(plot_data, aes(y = y_pos)) +
   panel_theme +
   theme(strip.text.y.left = element_blank())
 
-make_trend_plot <- function(trend_grp, x_label) {
-  sub_data <- dot_data %>% filter(trend_group == trend_grp)
-  ggplot(sub_data, aes(x = trend_x, y = y_pos)) +
-    geom_point(aes(size = color_gene_count, color = hex_color), alpha = 0.96) +
-    geom_hline(data = comparison_lines, aes(yintercept = y_sep),
-               color = "grey55", linewidth = 0.55, linetype = "dotted") +
-    scale_color_identity() +
-    scale_size_continuous(range = c(2.3, 6.5), name = "Genes") +
-    scale_x_continuous(expand = expansion(mult = c(0.12, 0.12))) +
-    scale_y_continuous(expand = expansion(add = c(1.0, 1.0))) +
-    shared_facet +
-    labs(x = x_label) +
-    panel_theme +
-    theme(strip.text.y.left = element_blank())
-}
-
-trend_A  <- make_trend_plot("A",   "A")
-trend_AL <- make_trend_plot("A+L", "A+L")
-trend_L  <- make_trend_plot("L",   "L")
-trend_P  <- make_trend_plot("P",   "P")
+trend_plot <- ggplot(dot_data, aes(x = trend_x, y = y_pos)) +
+  geom_point(aes(size = color_gene_count, color = hex_color), alpha = 0.96) +
+  geom_vline(xintercept = dot_separators, color = "grey55", linewidth = 0.55, linetype = "dotted") +
+  geom_hline(data = comparison_lines, aes(yintercept = y_sep), color = "grey55", linewidth = 0.55, linetype = "dotted") +
+  scale_color_identity() +
+  scale_size_continuous(range = c(2.3, 6.5), name = "Genes") +
+  scale_x_continuous(expand = expansion(mult = c(0.06, 0.06)), breaks = group_centers, labels = group_names) +
+  scale_y_continuous(expand = expansion(add = c(1.0, 1.0))) +
+  shared_facet +
+  labs(x = "Trends") +
+  panel_theme +
+  theme(
+    strip.text.y.left = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold"),
+    axis.ticks.x = element_blank()
+  )
 
 gene_plot <- ggplot(plot_data, aes(x = 1, y = y_pos)) +
-  ggtext::geom_richtext(aes(label = top_genes),
-                        hjust = 0, fill = NA, label.color = NA,
-                        size = 2.35, lineheight = 1.06) +
-  geom_hline(data = comparison_lines, aes(yintercept = y_sep),
-             color = "grey55", linewidth = 0.55, linetype = "dotted") +
+  ggtext::geom_richtext(aes(label = top_genes), hjust = 0, fill = NA, label.color = NA, size = 2.35, lineheight = 1.06) +
+  geom_hline(data = comparison_lines, aes(yintercept = y_sep), color = "grey55", linewidth = 0.55, linetype = "dotted") +
   scale_x_continuous(limits = c(1, 2.05), expand = c(0, 0)) +
   scale_y_continuous(expand = expansion(add = c(1.0, 1.0))) +
   shared_facet +
@@ -289,19 +265,17 @@ gene_plot <- ggplot(plot_data, aes(x = 1, y = y_pos)) +
   panel_theme +
   theme(strip.text.y.left = element_blank())
 
-single_plot <- contrast_plot + go_term_plot + bar_plot +
-               trend_A + trend_AL + trend_L + trend_P + gene_plot +
-  plot_layout(widths = c(1.05, 2.7, 1.8, 0.75, 0.85, 0.75, 0.9, 3.1),
-              guides = "collect") &
+single_plot <- contrast_plot + go_term_plot + bar_plot + trend_plot + gene_plot +
+  plot_layout(widths = c(0.65, 2.75, 1.85, 1.35, 3.05), guides = "collect") &
   theme(legend.position = "right")
 
 png(file.path(output_dir, "single_GO_summary_plot_patchwork.png"),
-    width = 4200, height = max(4200, 86 * nrow(plot_data)), res = 260)
+    width = 3800, height = max(4200, 86 * nrow(plot_data)), res = 260)
 print(single_plot)
 dev.off()
 
 pdf(file.path(output_dir, "single_GO_summary_plot_patchwork.pdf"),
-    width = 18, height = max(15, 0.46 * nrow(plot_data)))
+    width = 16, height = max(15, 0.46 * nrow(plot_data)))
 print(single_plot)
 dev.off()
 
