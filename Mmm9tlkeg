@@ -1,0 +1,107 @@
+# ================================================
+# KEGG Pathway Batch Highlighter from TSV (R)
+# ================================================
+# Reads a TSV file with:
+#   Column 2  → pathway_id     (e.g. "map00010")
+#   Column 8  → present_ecs    (semicolon-delimited EC numbers)
+#
+# As a test: ONLY processes the first 3 rows
+# For each row it downloads the official KEGG map
+# with those EC numbers highlighted in blue (white text)
+#
+# Output files are named: <pathway_id>_highlighted.png
+# ================================================
+
+# --- One-time setup (run once) ---
+# if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+# BiocManager::install("KEGGREST")
+
+library(KEGGREST)
+library(stringr)
+
+# ====================== CORE FUNCTION (unchanged) ======================
+download_highlighted_kegg_pathway <- function(map_id, ec_string, output_file = NULL) {
+  
+  # Parse EC list
+  ec_list <- str_split(ec_string, ";")[[1]] |> str_trim()
+  ec_list <- ec_list[ec_list != ""]
+  
+  if (length(ec_list) == 0) {
+    cat("⚠️  Skipping row with no EC numbers (pathway:", map_id, ")\n")
+    return(invisible(NULL))
+  }
+  
+  # Blue background + white text (same as before)
+  bg_colors <- rep("blue", length(ec_list))
+  fg_colors <- rep("white", length(ec_list))
+  
+  cat("→ Processing", map_id, "with", length(ec_list), "EC numbers...\n")
+  
+  # Get direct URL to colored PNG from KEGG
+  colored_url <- color.pathway.by.objects(
+    pathway.id     = map_id,
+    object.id.list = ec_list,
+    bg.color.list  = bg_colors,
+    fg.color.list  = fg_colors
+  )
+  
+  # Default filename
+  if (is.null(output_file)) {
+    output_file <- paste0(map_id, "_highlighted.png")
+  }
+  
+  # Download
+  download.file(colored_url, destfile = output_file, mode = "wb", quiet = TRUE)
+  
+  cat("   ✅ Saved:", output_file, "\n")
+}
+
+# ====================== BATCH PROCESSOR ======================
+batch_highlight_from_tsv <- function(tsv_file) {
+  
+  if (!file.exists(tsv_file)) {
+    stop("TSV file not found: ", tsv_file)
+  }
+  
+  # Read TSV (column indices are 1-based)
+  df <- read.delim(tsv_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE)
+  
+  cat("Loaded", nrow(df), "rows from", tsv_file, "\n")
+  
+  # TEST MODE: only first 3 rows
+  test_rows <- min(3, nrow(df))
+  df_test <- head(df, test_rows)
+  
+  cat("TEST MODE → Processing first", test_rows, "rows only\n\n")
+  
+  # Process each row
+  for (i in seq_len(nrow(df_test))) {
+    pathway_id <- df_test[i, 2]   # Column 2
+    ec_string  <- df_test[i, 8]   # Column 8
+    
+    # Skip if pathway_id is missing
+    if (is.na(pathway_id) || pathway_id == "") {
+      cat("⚠️  Skipping row", i, ": missing pathway_id\n")
+      next
+    }
+    
+    cat("Row", i, "→", pathway_id, "\n")
+    download_highlighted_kegg_pathway(pathway_id, ec_string)
+    cat("\n")
+  }
+  
+  cat("✅ Batch processing complete (first 3 rows only)\n")
+}
+
+# ====================== RUN IT ======================
+# Replace with the actual path to your TSV file
+my_tsv <- "your_data.tsv"          # ←←← CHANGE THIS
+
+# Or run from command line:
+# Rscript kegg_batch_highlight.R your_data.tsv
+
+if (!interactive() && length(commandArgs(trailingOnly = TRUE)) > 0) {
+  my_tsv <- commandArgs(trailingOnly = TRUE)[1]
+}
+
+batch_highlight_from_tsv(my_tsv)
