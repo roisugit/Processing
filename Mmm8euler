@@ -1,0 +1,39 @@
+library(tidyverse)
+library(eulerr)
+
+dir.create(output_dir, showWarnings = FALSE)
+
+facet_gene_sets <- merged %>%
+  filter(!is.na(facet), facet != "Unannotated") %>%
+  distinct(facet, gene_id) %>%
+  group_by(facet) %>%
+  summarise(genes = list(unique(gene_id)), .groups = "drop") %>%
+  pull(genes, name = facet)
+
+euler_fit <- euler(facet_gene_sets)
+
+euler_plot <- plot(euler_fit,
+  quantities = list(fontsize = 13, fontface = "bold"),
+  labels = list(fontsize = 14, fontface = "bold"),
+  fills = c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"),
+  edges = list(lwd = 1.8, col = "grey30"),
+  main = list(label = "Gene Overlap by GO Facet", fontsize = 16, fontface = "bold")
+)
+
+png(file.path(output_dir, "GO_facets_euler_diagram.png"),
+    width = 3400, height = 2800, res = 320)
+print(euler_plot)
+dev.off()
+
+pdf(file.path(output_dir, "GO_facets_euler_diagram.pdf"),
+    width = 12, height = 10)
+print(euler_plot)
+dev.off()
+
+intersection_summary <- data.frame(
+  Intersection = names(euler_fit$original.values),
+  Gene_Count = round(euler_fit$original.values)
+)
+write_csv(intersection_summary, file.path(output_dir, "GO_facets_gene_overlap_summary.csv"))
+
+message("Euler diagram and summary saved to ", output_dir)
