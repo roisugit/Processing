@@ -53,7 +53,7 @@ FACET_GO_TERM_COL <- 1
 FACET_GROUP_COL   <- 2
 
 # ========================================================
-# LOAD DATA
+# LOAD FACETS
 # ========================================================
 
 facet_raw <- read_tsv(facet_file, show_col_types = FALSE)
@@ -63,12 +63,20 @@ facet_df <- facet_raw %>%
     facet   = as.character(.data[[names(facet_raw)[FACET_GROUP_COL]]])
   )
 
+# ========================================================
+# LOAD GENE COLORS
+# ========================================================
+
 gene_color_raw <- read_tsv(gene_color_file, show_col_types = FALSE)
 gene_color_df <- gene_color_raw %>%
   transmute(
     gene_id   = as.character(.data[[names(gene_color_raw)[1]]]),
     hex_color = as.character(.data[[names(gene_color_raw)[2]]])
   )
+
+# ========================================================
+# LOAD GROUP TRENDS + ADD DOT GROUPS
+# ========================================================
 
 group_trend_df <- read_csv(group_trend_file, show_col_types = FALSE) %>%
   rename(hex_color = Color) %>%
@@ -84,7 +92,7 @@ group_trend_df <- read_csv(group_trend_file, show_col_types = FALSE) %>%
   )
 
 # ========================================================
-# PARSE FILES (unchanged)
+# PARSE FILES
 # ========================================================
 
 go_long_list <- list()
@@ -141,7 +149,7 @@ for (i in seq_len(nrow(datasets))) {
 }
 
 # ========================================================
-# COMBINE DATA + TOP GENES (unchanged)
+# COMBINE DATA
 # ========================================================
 
 go_long <- bind_rows(go_long_list) %>%
@@ -159,9 +167,17 @@ merged <- go_gene_long %>%
   left_join(gene_color_df, by = "gene_id") %>%
   left_join(go_long, by = c("comparison", "go_term"))
 
+# ========================================================
+# GENE UNIQUENESS
+# ========================================================
+
 gene_uniqueness <- merged %>%
   distinct(go_term, gene_id) %>%
   count(gene_id, name = "go_occurrences")
+
+# ========================================================
+# TOP GENES
+# ========================================================
 
 top_gene_labels <- merged %>%
   filter(!is.na(gene_log2FC)) %>%
