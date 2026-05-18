@@ -24,8 +24,7 @@ euler_plot <- plot(euler_fit,
   quantities = list(fontsize = 13, fontface = "bold"),
   labels = list(fontsize = 14, fontface = "bold"),
   fills = list(fill = hue_pal()(n_sets)),
-  edges = list(lwd = 1.8, col = "grey30"),
-  main = list(label = "Gene Overlap by GO Facet", fontsize = 16, fontface = "bold")
+  edges = list(lwd = 1.8, col = "grey30")
 )
 
 png(file.path(output_dir, "GO_facets_euler_diagram.png"),
