@@ -1,7 +1,7 @@
-# =========================================================
+# ========================================================
 # Publication-style GO summary figure
 # Multi-panel layout using patchwork
-# =========================================================
+# ========================================================
 
 library(tidyverse)
 library(ggtext)
@@ -10,9 +10,9 @@ library(patchwork)
 library(cowplot)
 library(ggh4x)
 
-# =========================================================
+# ========================================================
 # USER SETTINGS
-# =========================================================
+# ========================================================
 
 datasets <- tribble(
   ~comparison,    ~direction, ~go_file,              ~gene_file,
@@ -35,9 +35,9 @@ GO_LOG2FE_THRESHOLD <- 3
 SIGN_GO_BY_DIRECTION <- TRUE
 TOP_N_GENES <- 5
 
-# =========================================================
+# ========================================================
 # COLUMN SETTINGS
-# =========================================================
+# ========================================================
 
 GO_TERM_COL <- 2
 GO_GENES_COL <- 11
@@ -49,9 +49,9 @@ GENE_LOG2FC_COL <- 2
 FACET_GO_TERM_COL <- 1
 FACET_GROUP_COL <- 2
 
-# =========================================================
+# ========================================================
 # LOAD FACETS
-# =========================================================
+# ========================================================
 
 facet_raw <- read_tsv(
   facet_file,
@@ -60,17 +60,13 @@ facet_raw <- read_tsv(
 
 facet_df <- facet_raw %>%
   transmute(
-    go_term = as.character(
-      .data[[names(facet_raw)[FACET_GO_TERM_COL]]]
-    ),
-    facet = as.character(
-      .data[[names(facet_raw)[FACET_GROUP_COL]]]
-    )
+    go_term = as.character(.data[[names(facet_raw)[FACET_GO_TERM_COL]]]),
+    facet = as.character(.data[[names(facet_raw)[FACET_GROUP_COL]]])
   )
 
-# =========================================================
+# ========================================================
 # LOAD GENE COLORS
-# =========================================================
+# ========================================================
 
 gene_color_raw <- read_tsv(
   gene_color_file,
@@ -79,32 +75,33 @@ gene_color_raw <- read_tsv(
 
 gene_color_df <- gene_color_raw %>%
   transmute(
-    gene_id = as.character(
-      .data[[names(gene_color_raw)[1]]]
-    ),
-    hex_color = as.character(
-      .data[[names(gene_color_raw)[2]]]
-    )
+    gene_id = as.character(.data[[names(gene_color_raw)[1]]]),
+    hex_color = as.character(.data[[names(gene_color_raw)[2]]])
   )
 
-# =========================================================
-# LOAD GROUP TRENDS
-# =========================================================
+# ========================================================
+# LOAD GROUP TRENDS + ADD DOT GROUPS FOR SPLIT PANELS
+# ========================================================
 
 group_trend_df <- read_csv(
   group_trend_file,
   show_col_types = FALSE
 ) %>%
-  rename(
-    hex_color = Color
-  ) %>%
+  rename(hex_color = Color) %>%
   mutate(
-    color_order = row_number()
+    color_order = row_number(),
+    # Split exactly as requested: A (1-2), A+L (3-4), L (5-6), P (7-11)
+    dot_group = case_when(
+      color_order <= 2 ~ "A",
+      color_order <= 4 ~ "A+L",
+      color_order <= 6 ~ "L",
+      TRUE ~ "P"
+    )
   )
 
-# =========================================================
+# ========================================================
 # PARSE FILES
-# =========================================================
+# ========================================================
 
 go_long_list <- list()
 gene_long_list <- list()
@@ -136,27 +133,17 @@ for (i in seq_len(nrow(datasets))) {
 
   gene_long <- gene_df %>%
     transmute(
-      gene_id = as.character(
-        .data[[names(gene_df)[GENE_ID_COL]]]
-      ),
-      gene_log2FC = as.numeric(
-        .data[[names(gene_df)[GENE_LOG2FC_COL]]]
-      )
+      gene_id = as.character(.data[[names(gene_df)[GENE_ID_COL]]]),
+      gene_log2FC = as.numeric(.data[[names(gene_df)[GENE_LOG2FC_COL]]])
     )
 
   gene_long_list[[dataset_name]] <- gene_long
 
   go_long <- go_df %>%
     transmute(
-      go_term = as.character(
-        .data[[names(go_df)[GO_TERM_COL]]]
-      ),
-      gene_list = as.character(
-        .data[[names(go_df)[GO_GENES_COL]]]
-      ),
-      go_log2FC = as.numeric(
-        .data[[names(go_df)[GO_LOG2FE_COL]]]
-      ),
+      go_term = as.character(.data[[names(go_df)[GO_TERM_COL]]]),
+      gene_list = as.character(.data[[names(go_df)[GO_GENES_COL]]]),
+      go_log2FC = as.numeric(.data[[names(go_df)[GO_LOG2FE_COL]]]),
       comparison = comparison
     ) %>%
     mutate(
@@ -194,9 +181,9 @@ for (i in seq_len(nrow(datasets))) {
   go_gene_list[[dataset_name]] <- go_gene_links
 }
 
-# =========================================================
+# ========================================================
 # COMBINE DATA
-# =========================================================
+# ========================================================
 
 go_long <- bind_rows(go_long_list) %>%
   left_join(facet_df, by = "go_term") %>%
@@ -222,17 +209,17 @@ merged <- go_gene_long %>%
     by = c("comparison", "go_term")
   )
 
-# =========================================================
+# ========================================================
 # GENE UNIQUENESS
-# =========================================================
+# ========================================================
 
 gene_uniqueness <- merged %>%
   distinct(go_term, gene_id) %>%
   count(gene_id, name = "go_occurrences")
 
-# =========================================================
+# ========================================================
 # TOP GENES
-# =========================================================
+# ========================================================
 
 top_gene_labels <- merged %>%
   filter(!is.na(gene_log2FC)) %>%
@@ -247,21 +234,22 @@ top_gene_labels <- merged %>%
   left_join(gene_uniqueness, by = "gene_id") %>%
   mutate(
 
-    square = ifelse(
-      is.na(hex_color),
-      "",
-      paste0(
-        "<span style='color:",
-        hex_color,
-        ";'>■</span>"
-      )
-    ),
+    square = ifelse(  
+      is.na(hex_color),  
+      "",  
+      paste0(  
+        "<span style='color:",  
+        hex_color,  
+        ";'>■</span>"  
+      )  
+    ),  
 
-    gene_label = ifelse(
-      go_occurrences == 1,
-      paste0("<b><i>", gene_id, "</i></b> ", square),
-      paste0("<i>", gene_id, "</i> ", square)
+    gene_label = ifelse(  
+      go_occurrences == 1,  
+      paste0("<b><i>", gene_id, "</i></b> ", square),  
+      paste0("<i>", gene_id, "</i> ", square)  
     )
+
   ) %>%
   group_by(
     comparison,
@@ -273,9 +261,9 @@ top_gene_labels <- merged %>%
     .groups = "drop"
   )
 
-# =========================================================
+# ========================================================
 # PLOT DATA
-# =========================================================
+# ========================================================
 
 plot_data <- go_long %>%
   left_join(
@@ -290,16 +278,17 @@ plot_data <- go_long %>%
     top_genes = replace_na(top_genes, ""),
     abs_go_log2FC = abs(go_log2FC),
 
-    comparison_label = recode(
-      comparison,
-      comparison_1 = "D2 v D0",
-      comparison_2 = "D7 v D0",
-      comparison_3 = "D7 v D2"
+    comparison_label = recode(  
+      comparison,  
+      comparison_1 = "D2 v D0",  
+      comparison_2 = "D7 v D0",  
+      comparison_3 = "D7 v D2"  
     )
+
   ) %>%
   arrange(
     facet,
-    comparison,
+    comparison_label,
     desc(abs_go_log2FC)
   ) %>%
   group_by(
@@ -307,49 +296,24 @@ plot_data <- go_long %>%
     comparison_label
   ) %>%
   mutate(
-    comparison_row = row_number()
-  ) %>%
-  ungroup() %>%
-  group_by(facet) %>%
-  mutate(
     y_pos = rev(row_number())
   ) %>%
   ungroup()
 
-# =========================================================
-# TREND DOT GROUPS
-# =========================================================
+# ========================================================
+# TREND DOT DATA
+# ========================================================
 
 color_positions <- group_trend_df %>%
   arrange(color_order) %>%
   mutate(
-
-    trend_group = case_when(
-      color_order %in% 1:2 ~ "A",
-      color_order %in% 3:4 ~ "A+L",
-      color_order %in% 5:6 ~ "L",
-      color_order %in% 7:11 ~ "P"
-    )
-
-  ) %>%
-
-  group_by(trend_group) %>%
-
-  mutate(
     trend_x = row_number()
   ) %>%
-
-  ungroup() %>%
-
   select(
     hex_color,
-    trend_group,
-    trend_x
+    trend_x,
+    dot_group
   )
-
-# =========================================================
-# TREND DOT DATA
-# =========================================================
 
 dot_data <- merged %>%
   filter(!is.na(hex_color)) %>%
@@ -382,158 +346,67 @@ dot_data <- merged %>%
     by = "hex_color"
   )
 
-# =========================================================
-# COMPARISON SEPARATORS
-# =========================================================
+# ========================================================
+# SHARED FACET (now nested so contrasts are styled exactly like facet labels)
+# ========================================================
 
-comparison_lines <- plot_data %>%
-  group_by(
-    facet,
-    comparison_label
-  ) %>%
-  summarise(
-    y_sep = max(y_pos) + 0.5,
-    y_mid = mean(y_pos),
-    ymax = max(y_pos),
-    .groups = "drop"
-  ) %>%
-  group_by(facet) %>%
-  arrange(desc(ymax)) %>%
-  slice(-1) %>%
-  ungroup()
-
-# =========================================================
-# SHARED FACET
-# =========================================================
-
-shared_facet <- facet_grid(
-  facet ~ .,
+shared_facet <- facet_nested(
+  facet + comparison_label ~ .,
   scales = "free_y",
   space = "free_y",
   switch = "y"
 )
 
-# =========================================================
-# COMMON THEME
-# =========================================================
+# ========================================================
+# COMMON THEME - TIGHTER LAYOUT
+# ========================================================
 
 panel_theme <- theme_minimal(base_size = 10) +
   theme(
 
-    panel.grid = element_blank(),
+    panel.grid = element_blank(),  
 
-    axis.title = element_blank(),
+    axis.title = element_blank(),  
 
-    axis.text.y = element_blank(),
-    axis.ticks = element_blank(),
+    axis.text.y = element_blank(),  
+    axis.ticks = element_blank(),  
 
-    axis.text.x = element_blank(),
-    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank(),  
+    axis.ticks.x = element_blank(),  
 
-    strip.placement = "outside",
+    plot.margin = margin(0, 0, 0, 0),  
 
-    strip.background.y = element_rect(
-      fill = "grey92",
-      color = "grey45",
-      linewidth = 0.7
-    ),
+    strip.placement = "outside",  
 
-    strip.text.y.left = element_text(
-      angle = 90,
-      face = "bold",
-      size = 9,
-      margin = margin(
-        1,
-        1,
-        1,
-        1
-      )
-    ),
+    strip.background.y = element_rect(  
+      fill = "grey92",  
+      color = "grey45",  
+      linewidth = 0.7  
+    ),  
 
-    panel.border = element_rect(
-      color = "grey72",
-      fill = NA,
-      linewidth = 0.7
-    ),
+    strip.text.y.left = element_text(  
+      angle = 90,  
+      face = "bold",  
+      size = 9,   # small like requested
+      margin = margin(2, 2, 2, 2)
+    ),  
 
-    panel.spacing.y = unit(0, "lines"),
-    panel.spacing.x = unit(0, "lines"),
+    strip.text.x = element_blank(),  
 
-    plot.margin = margin(0, 0, 0, 0),
+    panel.border = element_rect(  
+      color = "grey72",  
+      fill = NA,  
+      linewidth = 0.7  
+    ),  
 
-    strip.clip = "off"
+    # Tight plot - minimal space between rows
+    panel.spacing.y = unit(0.05, "lines")
+
   )
 
-# =========================================================
-# CONTRAST PANEL
-# =========================================================
-
-contrast_labels <- plot_data %>%
-  group_by(
-    facet,
-    comparison_label
-  ) %>%
-  summarise(
-    y_pos = mean(y_pos),
-    .groups = "drop"
-  )
-
-contrast_plot <- ggplot(
-  contrast_labels,
-  aes(
-    x = 1,
-    y = y_pos
-  )
-) +
-
-  geom_label(
-    aes(label = comparison_label),
-
-    angle = 90,
-
-    fill = "grey92",
-    color = "black",
-
-    label.size = 0.35,
-
-    fontface = "bold",
-
-    size = 2.4,
-
-    label.padding = unit(0.08, "lines")
-  ) +
-
-  geom_hline(
-    data = comparison_lines,
-    aes(yintercept = y_sep),
-
-    color = "grey55",
-    linewidth = 0.55,
-    linetype = "dotted"
-  ) +
-
-  coord_cartesian(clip = "off") +
-
-  scale_x_continuous(
-    limits = c(0.6, 1.4),
-    expand = c(0, 0)
-  ) +
-
-  scale_y_continuous(
-    expand = expansion(add = c(0.45, 0.45))
-  ) +
-
-  shared_facet +
-
-  panel_theme +
-
-  theme(
-    strip.text.y.left = element_blank()
-  )
-
-# =========================================================
+# ========================================================
 # GO TERM PANEL
-# =========================================================
+# ========================================================
 
 go_term_plot <- ggplot(
   plot_data,
@@ -550,24 +423,13 @@ go_term_plot <- ggplot(
     lineheight = 0.90
   ) +
 
-  geom_hline(
-    data = comparison_lines,
-    aes(yintercept = y_sep),
-
-    color = "grey55",
-    linewidth = 0.55,
-    linetype = "dotted"
-  ) +
-
-  coord_cartesian(clip = "off") +
-
   scale_x_continuous(
-    limits = c(0.15, 1.02),
+    limits = c(0.20, 1.01),
     expand = c(0, 0)
   ) +
 
   scale_y_continuous(
-    expand = expansion(add = c(0.45, 0.45))
+    expand = expansion(add = c(0.5, 0.5))   # tighter
   ) +
 
   shared_facet +
@@ -578,9 +440,9 @@ go_term_plot <- ggplot(
     strip.text.y.left = element_blank()
   )
 
-# =========================================================
+# ========================================================
 # BAR PANEL
-# =========================================================
+# ========================================================
 
 bar_plot <- ggplot(
   plot_data,
@@ -598,15 +460,6 @@ bar_plot <- ggplot(
     lineend = "round"
   ) +
 
-  geom_hline(
-    data = comparison_lines,
-    aes(yintercept = y_sep),
-
-    color = "grey55",
-    linewidth = 0.55,
-    linetype = "dotted"
-  ) +
-
   scale_color_gradient(
     low = "#B7D4F0",
     high = "#08306B",
@@ -618,12 +471,10 @@ bar_plot <- ggplot(
   ) +
 
   scale_y_continuous(
-    expand = expansion(add = c(0.45, 0.45))
+    expand = expansion(add = c(0.5, 0.5))   # tighter
   ) +
 
   shared_facet +
-
-  coord_cartesian(clip = "off") +
 
   labs(x = "log2 Fold Enrichment") +
 
@@ -633,16 +484,13 @@ bar_plot <- ggplot(
     strip.text.y.left = element_blank()
   )
 
-# =========================================================
-# TREND PANEL FUNCTION
-# =========================================================
+# ========================================================
+# TREND DOT PANELS - SPLIT INTO 4 EXACTLY AS REQUESTED
+# ========================================================
 
-make_trend_plot <- function(group_name, title_name) {
-
+make_trend_plot <- function(grp_label) {
   ggplot(
-    dot_data %>%
-      filter(trend_group == group_name),
-
+    dot_data %>% filter(dot_group == grp_label),
     aes(
       x = trend_x,
       y = y_pos
@@ -657,66 +505,42 @@ make_trend_plot <- function(group_name, title_name) {
       alpha = 0.96
     ) +
 
-    geom_hline(
-      data = comparison_lines,
-      aes(yintercept = y_sep),
-
-      color = "grey55",
-      linewidth = 0.55,
-      linetype = "dotted"
-    ) +
-
     scale_color_identity() +
 
     scale_size_continuous(
-      range = c(2.0, 5.8),
+      range = c(2.3, 6.5),
       name = "Genes"
     ) +
 
     scale_x_continuous(
-      expand = expansion(mult = c(0.08, 0.08))
+      expand = expansion(mult = c(0.15, 0.15))
     ) +
 
     scale_y_continuous(
-      expand = expansion(add = c(0.45, 0.45))
+      expand = expansion(add = c(0.5, 0.5))   # tighter
     ) +
 
     shared_facet +
 
-    coord_cartesian(clip = "off") +
-
-    labs(x = title_name) +
+    labs(x = grp_label) +
 
     panel_theme +
 
     theme(
       strip.text.y.left = element_blank(),
-
-      axis.title.x = element_text(
-        face = "bold",
-        size = 8
-      )
+      # make panel label visible and styled nicely
+      axis.title.x = element_text(face = "bold", size = 9.5)
     )
 }
 
-trend_A_plot <- make_trend_plot("A", "A")
-trend_AL_plot <- make_trend_plot("A+L", "A+L")
-trend_L_plot <- make_trend_plot("L", "L")
-trend_P_plot <- make_trend_plot("P", "P")
+trend_A_plot   <- make_trend_plot("A")
+trend_AL_plot  <- make_trend_plot("A+L")
+trend_L_plot   <- make_trend_plot("L")
+trend_P_plot   <- make_trend_plot("P")
 
-trend_plot <-
-  trend_A_plot +
-  trend_AL_plot +
-  trend_L_plot +
-  trend_P_plot +
-
-  plot_layout(
-    widths = c(1, 1, 1, 2)
-  )
-
-# =========================================================
+# ========================================================
 # TOP GENES PANEL
-# =========================================================
+# ========================================================
 
 gene_plot <- ggplot(
   plot_data,
@@ -729,33 +553,22 @@ gene_plot <- ggplot(
   ggtext::geom_richtext(
     aes(label = top_genes),
 
-    hjust = 0,
+    hjust = 0,  
 
-    fill = NA,
-    label.color = NA,
+    fill = NA,  
+    label.color = NA,  
 
-    size = 2.35,
+    size = 2.35,  
     lineheight = 1.06
   ) +
 
-  geom_hline(
-    data = comparison_lines,
-    aes(yintercept = y_sep),
-
-    color = "grey55",
-    linewidth = 0.55,
-    linetype = "dotted"
-  ) +
-
-  coord_cartesian(clip = "off") +
-
   scale_x_continuous(
-    limits = c(0.95, 2.45),
+    limits = c(1, 2.05),
     expand = c(0, 0)
   ) +
 
   scale_y_continuous(
-    expand = expansion(add = c(0.45, 0.45))
+    expand = expansion(add = c(0.5, 0.5))   # tighter
   ) +
 
   shared_facet +
@@ -768,25 +581,27 @@ gene_plot <- ggplot(
     strip.text.y.left = element_blank()
   )
 
-# =========================================================
-# COMBINE PANELS
-# =========================================================
+# ========================================================
+# COMBINE PANELS (no contrast panel needed - contrasts are now nested facet strips)
+# ========================================================
 
-single_plot <-
-
-  contrast_plot +
-  go_term_plot +
+single_plot <- go_term_plot +
   bar_plot +
-  trend_plot +
+  trend_A_plot +
+  trend_AL_plot +
+  trend_L_plot +
+  trend_P_plot +
   gene_plot +
 
   plot_layout(
     widths = c(
-      0.55,
-      2.8,
-      1.8,
-      2.6,
-      3.4
+      2.75,   # GO terms
+      1.85,   # bar
+      0.68,   # A (2 colors)
+      0.68,   # A+L (2 colors)
+      0.68,   # L (2 colors)
+      1.05,   # P (5 colors) - wider to keep nice dot spacing
+      3.05    # top genes
     ),
     guides = "collect"
   ) &
@@ -795,9 +610,9 @@ single_plot <-
     legend.position = "right"
   )
 
-# =========================================================
+# ========================================================
 # SAVE PNG
-# =========================================================
+# ========================================================
 
 png(
   file.path(
@@ -805,11 +620,11 @@ png(
     "single_GO_summary_plot_patchwork.png"
   ),
 
-  width = 4200,
+  width = 4150,   # slightly wider for the 4 dot panels
 
   height = max(
-    3400,
-    72 * nrow(plot_data)
+    4200,
+    78 * nrow(plot_data)   # tighter multiplier
   ),
 
   res = 260
@@ -819,9 +634,9 @@ print(single_plot)
 
 dev.off()
 
-# =========================================================
+# ========================================================
 # SAVE PDF
-# =========================================================
+# ========================================================
 
 pdf(
   file.path(
@@ -829,11 +644,11 @@ pdf(
     "single_GO_summary_plot_patchwork.pdf"
   ),
 
-  width = 18,
+  width = 17.5,   # wider for the 4 dot panels
 
   height = max(
-    12,
-    0.38 * nrow(plot_data)
+    15,
+    0.42 * nrow(plot_data)   # tighter multiplier
   )
 )
 
@@ -841,9 +656,9 @@ print(single_plot)
 
 dev.off()
 
-# =========================================================
+# ========================================================
 # SAVE TABLES
-# =========================================================
+# ========================================================
 
 write_csv(
   plot_data,
