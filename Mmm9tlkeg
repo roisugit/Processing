@@ -2,42 +2,51 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
+import re
 
 def highlight_kegg_pathway(map_id, ec_string, row_num):
-    print(f"\nRow {row_num}: Pathway ID = {map_id}")
-    print(f"   Raw ECs (column 8): '{ec_string}'")
+    print(f"\n=== Row {row_num} ===")
+    print(f"Pathway ID = {map_id}")
+    print(f"Raw EC string (column 8) = '{ec_string}'")
     
-    # STRICT cleaning: only full EC numbers like 1.2.3.4 (ignore any with "-")
-    items = [x.strip() for x in str(ec_string).split(';') if str(x).strip()]
+    # Split and clean every single item
+    raw_items = [x.strip() for x in str(ec_string).split(';') if str(x).strip()]
+    print(f"Split items ({len(raw_items)}): {raw_items}")
+    
+    # ULTRA-STRICT EC filter: ONLY full EC numbers like "1.2.3.4" (exactly 3 dots, 4 numbers, no "-")
     ec_list = []
-    for item in items:
-        item = item.strip()
-        if item.upper().startswith(('EC:', 'EC ')):
-            item = item[3:].strip()
-        if item and all(c.isdigit() or c == '.' for c in item) and item.count('.') == 3 and '-' not in item:
-            ec_list.append(item)
-    ec_list = list(dict.fromkeys(ec_list))
+    for item in raw_items:
+        # Remove common prefixes
+        cleaned = item.upper().replace("EC:", "").replace("EC ", "").strip()
+        
+        # Strict regex: must be exactly N.N.N.N where each N is 1-2 digits
+        if re.match(r'^\d{1,2}\.\d{1,2}\.\d{1,2}\.\d{1,2}$', cleaned) and '-' not in cleaned:
+            ec_list.append(cleaned)
+        else:
+            print(f"   REJECTED: '{item}' → does not match full EC pattern")
     
-    print(f"   Highlighting {len(ec_list)} full ECs: {ec_list}")
+    ec_list = list(dict.fromkeys(ec_list))  # remove duplicates
+    print(f"FINAL ECs that will be highlighted ({len(ec_list)}): {ec_list}")
+    
     if not ec_list:
-        print("   Skipping - no full EC numbers")
+        print("   → Skipping: no valid full EC numbers found")
         return
     
-    # Force EC-specific map (best for EC highlighting)
+    # Force EC-specific map (this is the correct one for EC highlighting)
     if map_id.startswith('map'):
         target_map = 'ec' + map_id[3:]
     else:
         target_map = map_id
-    print(f"   Using EC map: {target_map}")
+    print(f"Using map: {target_map}")
     
-    # Bright yellow background + black text
+    # Bright yellow + black text (very visible)
     color_spec = "yellow,black"
     query_parts = [f"{ec}+{color_spec}" for ec in ec_list]
     multi_query = "\r\n".join(query_parts)
     
     params = {'map': target_map, 'multi_query': multi_query}
     full_url = "https://www.kegg.jp/kegg-bin/show_pathway?" + urllib.parse.urlencode(params)
-    print(f"   URL: {full_url}")
+    print(f"Colored URL: {full_url}")
     
     headers = {'User-Agent': 'Mozilla/5.0'}
     response = requests.get("https://www.kegg.jp/kegg-bin/show_pathway", params=params, headers=headers)
@@ -56,9 +65,9 @@ def highlight_kegg_pathway(map_id, ec_string, row_num):
             f.write(img_data)
         print(f"   ✓ Saved: {output_file} (yellow highlight)\n")
     else:
-        print(f"   ✗ Could not get image\n")
+        print(f"   ✗ Could not retrieve image\n")
 
-print("=== FIXED KEGG HIGHLIGHTER (First 3 rows only) ===\n")
+print("=== ULTRA-STRICT KEGG HIGHLIGHTER (First 3 rows only) ===\n")
 df = pd.read_csv("your_data.tsv", sep='\t')
 
 for i, row in df.head(3).iterrows():
