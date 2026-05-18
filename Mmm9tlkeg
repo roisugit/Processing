@@ -1,102 +1,45 @@
-# ================================================
-# KEGG Pathway Batch Highlighter from TSV (R) — UPDATED
-# ================================================
-# Changes made based on your report:
-#   • Switched to HIGH-CONTRAST colors: **yellow background + black text**
-#     (this makes the highlighted EC boxes extremely visible)
-#   • Added printing of the direct KEGG colored URL so you can open it in a browser
-#     to instantly verify whether the highlighting worked
-#   • Better EC cleaning and skip messages
-#   • Still processes only the first 3 rows (test mode)
-#
-# If the map still looks unhighlighted, open the printed URL in your browser.
-# If even the browser version has no yellow boxes → the EC numbers in column 8
-# are not present in that exact pathway map (very common with organism-specific maps).
-# ================================================
-
-library(KEGGREST)
+library(httr)
+library(rvest)
 library(stringr)
 
-# ====================== UPDATED CORE FUNCTION ======================
 download_highlighted_kegg_pathway <- function(map_id, ec_string, output_file = NULL) {
-  
-  # Parse and clean EC list
   ec_list <- str_split(ec_string, ";")[[1]] |> str_trim()
   ec_list <- ec_list[ec_list != ""]
-  
   if (length(ec_list) == 0) {
-    cat("⚠️  Skipping row with no EC numbers (pathway:", map_id, ")\n")
-    return(invisible(NULL))
+    cat("Skipping:", map_id, "(no EC numbers)\n")
+    return()
   }
-  
-  # NEW HIGH-CONTRAST COLORS (yellow background, black text)
-  bg_colors <- rep("yellow", length(ec_list))
-  fg_colors <- rep("black", length(ec_list))
-  
-  cat("→ Processing", map_id, "with", length(ec_list), "EC numbers...\n")
-  
-  # Get direct URL to colored PNG from KEGG
-  colored_url <- color.pathway.by.objects(
-    pathway.id     = map_id,
-    object.id.list = ec_list,
-    bg.color.list  = bg_colors,
-    fg.color.list  = fg_colors
-  )
-  
-  cat("   🔗 Colored URL (open this to verify):", colored_url, "\n")
-  
-  # Default filename
-  if (is.null(output_file)) {
-    output_file <- paste0(map_id, "_highlighted.png")
-  }
-  
-  # Download
-  download.file(colored_url, destfile = output_file, mode = "wb", quiet = TRUE)
-  
-  cat("   ✅ Saved:", output_file, "\n")
-}
-
-# ====================== BATCH PROCESSOR (unchanged) ======================
-batch_highlight_from_tsv <- function(tsv_file) {
-  
-  if (!file.exists(tsv_file)) {
-    stop("TSV file not found: ", tsv_file)
-  }
-  
-  df <- read.delim(tsv_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE)
-  
-  cat("Loaded", nrow(df), "rows from", tsv_file, "\n")
-  
-  # TEST MODE: only first 3 rows
-  test_rows <- min(3, nrow(df))
-  df_test <- head(df, test_rows)
-  
-  cat("TEST MODE → Processing first", test_rows, "rows only\n\n")
-  
-  for (i in seq_len(nrow(df_test))) {
-    pathway_id <- df_test[i, 2]   # Column 2
-    ec_string  <- df_test[i, 8]   # Column 8
-    
-    if (is.na(pathway_id) || pathway_id == "") {
-      cat("⚠️  Skipping row", i, ": missing pathway_id\n")
-      next
+  query_lines <- paste0(ec_list, "+yellow,black")
+  multi_query <- paste(query_lines, collapse = "\r\n")
+  resp <- GET("https://www.kegg.jp/kegg-bin/show_pathway", 
+              query = list(map = map_id, multi_query = multi_query))
+  page <- read_html(resp)
+  img_node <- page %>% html_element("img[usemap]")
+  if (length(img_node) == 0) img_node <- page %>% html_element("img[src*='.png']")
+  img_src <- html_attr(img_node, "src")
+  if (!is.na(img_src)) {
+    if (!grepl("^http", img_src)) {
+      img_src <- paste0("https://www.kegg.jp", ifelse(substr(img_src, 1, 1) == "/", "", "/"), img_src)
     }
-    
-    cat("Row", i, "→", pathway_id, "\n")
-    download_highlighted_kegg_pathway(pathway_id, ec_string)
-    cat("\n")
+    if (is.null(output_file)) output_file <- paste0(map_id, "_highlighted.png")
+    download.file(img_src, output_file, mode = "wb", quiet = TRUE)
+    cat("Saved:", output_file, "\n")
+  } else {
+    cat("Failed to find image for", map_id, "\n")
   }
-  
-  cat("✅ Batch processing complete (first 3 rows only)\n")
-  cat("💡 Tip: Open any of the printed 'Colored URL' links in your browser to double-check highlighting.\n")
 }
 
-# ====================== RUN IT ======================
-# Replace with the actual path to your TSV file
-my_tsv <- "your_data.tsv"          # ←←← CHANGE THIS
-
-if (!interactive() && length(commandArgs(trailingOnly = TRUE)) > 0) {
-  my_tsv <- commandArgs(trailingOnly = TRUE)[1]
+batch_highlight_from_tsv <- function(tsv_file) {
+  df <- read.delim(tsv_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE)
+  df_test <- head(df, 3)
+  for (i in seq_len(nrow(df_test))) {
+    map_id <- trimws(df_test[i, 2])
+    ec_string <- df_test[i, 8]
+    if (!is.na(map_id) && map_id != "") {
+      cat("Row", i, "->", map_id, "\n")
+      download_highlighted_kegg_pathway(map_id, ec_string)
+    }
+  }
 }
 
-batch_highlight_from_tsv(my_tsv)
+batch_highlight_from_tsv("your_data.tsv")
