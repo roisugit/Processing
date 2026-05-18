@@ -1,5 +1,6 @@
 library(tidyverse)
 library(eulerr)
+library(scales)
 
 dir.create(output_dir, showWarnings = FALSE)
 
@@ -10,12 +11,19 @@ facet_gene_sets <- merged %>%
   summarise(genes = list(unique(gene_id)), .groups = "drop") %>%
   pull(genes, name = facet)
 
+if (length(facet_gene_sets) == 0) {
+  message("No facets found for Euler diagram.")
+  stop()
+}
+
 euler_fit <- euler(facet_gene_sets)
+
+n_sets <- length(facet_gene_sets)
 
 euler_plot <- plot(euler_fit,
   quantities = list(fontsize = 13, fontface = "bold"),
   labels = list(fontsize = 14, fontface = "bold"),
-  fills = c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"),
+  fills = list(fill = hue_pal()(n_sets)),
   edges = list(lwd = 1.8, col = "grey30"),
   main = list(label = "Gene Overlap by GO Facet", fontsize = 16, fontface = "bold")
 )
