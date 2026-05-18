@@ -1,56 +1,67 @@
 import pandas as pd
-from bioservices import KEGG
-import os
-
-# One-time install (run in terminal once):
-# pip install bioservices
-
-k = KEGG()
+import requests
+from bs4 import BeautifulSoup
+import urllib.parse
 
 def highlight_kegg_pathway(map_id, ec_string, row_num):
     print(f"\nRow {row_num}: Pathway ID = {map_id}")
     print(f"   Raw ECs (column 8): '{ec_string}'")
     
-    ec_list = [ec.strip() for ec in str(ec_string).split(';') if str(ec).strip()]
-    print(f"   Cleaned EC list: {ec_list}")
+    # STRICT cleaning: only full EC numbers like 1.2.3.4 (ignore any with "-")
+    items = [x.strip() for x in str(ec_string).split(';') if str(x).strip()]
+    ec_list = []
+    for item in items:
+        item = item.strip()
+        if item.upper().startswith(('EC:', 'EC ')):
+            item = item[3:].strip()
+        if item and all(c.isdigit() or c == '.' for c in item) and item.count('.') == 3 and '-' not in item:
+            ec_list.append(item)
+    ec_list = list(dict.fromkeys(ec_list))
     
+    print(f"   Highlighting {len(ec_list)} full ECs: {ec_list}")
     if not ec_list:
-        print("   Skipping - no EC numbers")
+        print("   Skipping - no full EC numbers")
         return
     
-    # FORCE the EC-specific map (this is the key fix used by most people)
-    # KEGG's ecXXXXX maps are designed exactly for highlighting EC numbers
+    # Force EC-specific map (best for EC highlighting)
     if map_id.startswith('map'):
-        ec_map_id = 'ec' + map_id[3:]
-        print(f"   → Using EC-specific map: {ec_map_id} (best for EC highlighting)")
-        target_map = ec_map_id
+        target_map = 'ec' + map_id[3:]
     else:
         target_map = map_id
+    print(f"   Using EC map: {target_map}")
     
-    output_file = f"{target_map}_highlighted.png"
+    # Bright yellow background + black text
+    color_spec = "yellow,black"
+    query_parts = [f"{ec}+{color_spec}" for ec in ec_list]
+    multi_query = "\r\n".join(query_parts)
     
-    print(f"   → Highlighting {len(ec_list)} EC numbers on {target_map}...")
+    params = {'map': target_map, 'multi_query': multi_query}
+    full_url = "https://www.kegg.jp/kegg-bin/show_pathway?" + urllib.parse.urlencode(params)
+    print(f"   URL: {full_url}")
     
-    try:
-        # bioservices handles KEGG coloring internally (popular method on StackOverflow & GitHub)
-        k.save_pathway(target_map, output_file, keggid=ec_list)
-        print(f"   ✓ SUCCESS! Saved highlighted PNG: {output_file}")
-        print(f"   Open it — the EC boxes should now be clearly highlighted (default KEGG red boxes)\n")
-    except Exception as e:
-        print(f"   ✗ bioservices error: {e}")
-        print("   (Falling back to direct URL method below for verification)\n")
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get("https://www.kegg.jp/kegg-bin/show_pathway", params=params, headers=headers)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    img = soup.find('img', attrs={'usemap': True})
+    if not img:
+        img = soup.find('img', src=lambda x: x and '.png' in str(x).lower() if x else False)
+    
+    if img and img.get('src'):
+        img_src = img['src']
+        if not img_src.startswith('http'):
+            img_src = 'https://www.kegg.jp' + (img_src if img_src.startswith('/') else '/' + img_src)
+        output_file = f"{target_map}_highlighted.png"
+        img_data = requests.get(img_src, headers=headers).content
+        with open(output_file, 'wb') as f:
+            f.write(img_data)
+        print(f"   ✓ Saved: {output_file} (yellow highlight)\n")
+    else:
+        print(f"   ✗ Could not get image\n")
 
-print("=== ALTERNATIVE: bioservices KEGG Highlighter (First 3 rows only) ===\n")
-print("This is how most people do it in 2025/2026 (cleaner than raw requests/BeautifulSoup).")
-print("It forces the EC-specific map + uses KEGG's official coloring service.\n")
-
+print("=== FIXED KEGG HIGHLIGHTER (First 3 rows only) ===\n")
 df = pd.read_csv("your_data.tsv", sep='\t')
 
 for i, row in df.head(3).iterrows():
     map_id = str(row.iloc[1]).strip()
     ec_string = row.iloc[7]
     highlight_kegg_pathway(map_id, ec_string, i + 1)
-
-print("✅ Done! Check the generated _highlighted.png files.")
-print("If highlights are STILL missing, the EC numbers in column 8 simply aren't present on that pathway map.")
-print("Reply with ONE example row (pathway_id + full EC string) and I'll test the exact URL live.")
