@@ -2,6 +2,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
+import webbrowser
+import os
 
 def highlight_kegg_pathway(map_id, ec_string, row_num):
     print(f"\nRow {row_num}: Pathway ID = {map_id}")
@@ -11,25 +13,32 @@ def highlight_kegg_pathway(map_id, ec_string, row_num):
     if not ec_list:
         print("   Skipping - no EC numbers")
         return
+    
     headers = {'User-Agent': 'Mozilla/5.0'}
-    colors = "red,white"
+    color_spec = "magenta,black"
+    
     maps_to_try = [map_id]
     if map_id.startswith('map'):
-        ec_map_id = 'ec' + map_id[3:]
-        maps_to_try.append(ec_map_id)
-        print(f"   Will also try EC-specific map: {ec_map_id}")
+        ec_map = 'ec' + map_id[3:]
+        maps_to_try.append(ec_map)
+        print(f"   Will also try EC-specific map: {ec_map} (best for EC numbers)")
+    
     for current_map in maps_to_try:
-        print(f"   Trying map: {current_map} with color {colors}...")
-        query_parts = [f"{ec}+{colors}" for ec in ec_list]
+        print(f"   Trying map: {current_map} with {color_spec} highlight...")
+        query_parts = [f"{ec}+{color_spec}" for ec in ec_list]
         multi_query = "\r\n".join(query_parts)
         params = {'map': current_map, 'multi_query': multi_query}
         full_url = "https://www.kegg.jp/kegg-bin/show_pathway?" + urllib.parse.urlencode(params)
         print(f"   URL: {full_url}")
+        
+        webbrowser.open(full_url)
+        
         response = requests.get("https://www.kegg.jp/kegg-bin/show_pathway", params=params, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
         img = soup.find('img', attrs={'usemap': True})
         if not img:
             img = soup.find('img', src=lambda x: x and '.png' in str(x).lower() if x else False)
+        
         if img and img.get('src'):
             img_src = img['src']
             if not img_src.startswith('http'):
@@ -38,13 +47,14 @@ def highlight_kegg_pathway(map_id, ec_string, row_num):
             img_data = requests.get(img_src, headers=headers).content
             with open(output_file, 'wb') as f:
                 f.write(img_data)
-            print(f"   ✓ Saved: {output_file} (with red highlight)")
+            print(f"   ✓ Saved: {output_file} (magenta highlight)\n")
             break
     else:
-        print("   ✗ Failed to get image for this pathway")
+        print("   ✗ Failed to get image\n")
 
-print("=== KEGG EC Highlighter (First 3 rows) ===\n")
+print("=== KEGG EC Highlighter (First 3 rows only) ===\n")
 df = pd.read_csv("your_data.tsv", sep='\t')
+
 for i, row in df.head(3).iterrows():
     map_id = str(row.iloc[1]).strip()
     ec_string = row.iloc[7]
