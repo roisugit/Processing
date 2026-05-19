@@ -180,7 +180,7 @@ comparison_lines <- plot_data %>%
   slice(-1) %>%
   ungroup()
 
-shared_facet <- facet_grid(facet ~ ., scales = "free_y", space = "free_y", switch = "y", labeller = labeller(facet = label_wrap_gen(width = 25)))
+shared_facet <- facet_grid(facet ~ ., scales = "free_y", space = "free_y", switch = "y")
 
 panel_theme <- theme_minimal(base_size = 10) +
   theme(
