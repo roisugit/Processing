@@ -42,6 +42,13 @@ facet_df <- facet_raw %>%
   transmute(
     go_term = as.character(.data[[names(facet_raw)[FACET_GO_TERM_COL]]]),
     facet = as.character(.data[[names(facet_raw)[FACET_GROUP_COL]]])
+  ) %>%
+  mutate(
+    facet = case_when(
+      # ←←← CHANGE THIS LINE to the exact name of the ONE facet you want wrapped
+      facet == "EXACT_NAME_OF_THE_FACET_YOU_WANT_TO_WRAP" ~ stringr::str_wrap(facet, width = 25),
+      TRUE ~ facet
+    )
   )
 
 gene_color_raw <- read_tsv(gene_color_file, show_col_types = FALSE)
