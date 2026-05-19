@@ -45,8 +45,7 @@ facet_df <- facet_raw %>%
   ) %>%
   mutate(
     facet = case_when(
-      # ←←← CHANGE THIS LINE to the exact name of the ONE facet you want wrapped
-      facet == "EXACT_NAME_OF_THE_FACET_YOU_WANT_TO_WRAP" ~ stringr::str_wrap(facet, width = 25),
+      facet == "response to stimulus" ~ stringr::str_wrap(facet, width = 11),
       TRUE ~ facet
     )
   )
