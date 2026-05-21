@@ -21,7 +21,7 @@
 # - Controlled/normal response detection
 # - Non-immune systemic stress detection
 # - Heatmaps
-# - Radar plots
+# - Safe radar plots
 # - Severity classification
 # - Gene subgrouping
 # - NA-safe clustering
@@ -158,7 +158,7 @@ normal_signature_list <- list(
 )
 
 ############################
-# NON-IMMUNE SEVERE STRESS
+# NON-IMMUNE SYSTEMIC STRESS
 ############################
 
 nonimmune_signature_list <- list(
@@ -601,11 +601,11 @@ pheatmap(
   fontsize_row = 10,
   fontsize_col = 12,
 
-  main = "NON-IMMUNE SYSTEMIC STRESS"
+  main = "NONIMMUNE SYSTEMIC STRESS"
 )
 
 ############################
-# RADAR PLOTS
+# SAFE RADAR PLOTS
 ############################
 
 samples <- unique(all_scores$Sample)
@@ -622,14 +622,34 @@ for(samp in samples){
       Mean_logFC
     )
 
+  # Skip empty data
+  if(nrow(radar_df) == 0){
+    next
+  }
+
   values <- radar_df$Mean_logFC
+
+  # Replace bad values
+  values[is.na(values)] <- 0
+  values[is.nan(values)] <- 0
+  values[is.infinite(values)] <- 0
+
+  # Skip if all zero
+  if(all(values == 0)){
+    next
+  }
+
   names(values) <- radar_df$Signature
 
-  values[is.na(values)] <- 0
+  max_val <- max(values, na.rm = TRUE)
+
+  if(!is.finite(max_val)){
+    max_val <- 5
+  }
 
   radar_data <- rbind(
-    rep(5, length(values)),
-    rep(-2, length(values)),
+    rep(max_val + 1, length(values)),
+    rep(min(values) - 1, length(values)),
     values
   )
 
@@ -659,7 +679,14 @@ for(samp in samples){
 
     axislabcol = "black",
 
-    caxislabels = seq(-2,5,1),
+    caxislabels = round(
+      seq(
+        min(values) - 1,
+        max_val + 1,
+        length.out = 5
+      ),
+      1
+    ),
 
     cglwd = 0.8,
 
