@@ -1,0 +1,634 @@
+###############################################################
+# SALMONELLA BLOOD TRANSCRIPTOME SEVERITY ANALYSIS PIPELINE
+# ===========================================================
+#
+# PURPOSE:
+# Detect severe vs normal bacterial infection responses
+# from mouse blood transcriptome logFC data.
+#
+# INPUT:
+# 3 CSV files containing:
+#
+# gene,logFC
+#
+# EXAMPLE:
+# IL6,3.5
+# S100A8,5.2
+#
+# FEATURES:
+# - Uppercase-safe gene matching
+# - Severe infection signature scoring
+# - Normal/controlled response scoring
+# - Pathway subgrouping
+# - Heatmaps
+# - Radar plots
+# - Severity classification
+# - Gene-level categorization
+#
+###############################################################
+
+############################
+# LOAD LIBRARIES
+############################
+
+required_packages <- c(
+  "tidyverse",
+  "pheatmap",
+  "fmsb",
+  "RColorBrewer",
+  "reshape2",
+  "scales"
+)
+
+installed <- rownames(installed.packages())
+
+for(pkg in required_packages){
+  if(!(pkg %in% installed)){
+    install.packages(pkg)
+  }
+}
+
+library(tidyverse)
+library(pheatmap)
+library(fmsb)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+############################
+# USER INPUT FILES
+############################
+
+files <- c(
+  "sample1.csv",
+  "sample2.csv",
+  "sample3.csv"
+)
+
+############################
+# SEVERE INFECTION SIGNATURES
+############################
+
+severe_signature_list <- list(
+
+  Hyperinflammation = toupper(c(
+    "Il1b","Il6","Tnf","Ifng","Cxcl1","Cxcl2","Ccl2"
+  )),
+
+  Neutrophil_Activation = toupper(c(
+    "S100a8","S100a9","Lcn2","Mpo","Camp",
+    "Retnlg","Ngp","Ltf"
+  )),
+
+  Interferon_Response = toupper(c(
+    "Stat1","Irf7","Isg15","Ifit1","Ifit3",
+    "Mx1","Oas1","Oas2","Oas3"
+  )),
+
+  Immunosuppression = toupper(c(
+    "Il10","Arg1","Pdcd1","Lag3","Ctla4","Socs3"
+  )),
+
+  Emergency_Myelopoiesis = toupper(c(
+    "Csf3r","Cebpb","Cebpd","Osm","Fpr1"
+  )),
+
+  Acute_Phase_Response = toupper(c(
+    "Hp","Saa1","Saa2","Orm1","Lrg1"
+  )),
+
+  Complement_Coagulation = toupper(c(
+    "C3","Cfb","C1qa","F3","Serpine1"
+  )),
+
+  Oxidative_Burst = toupper(c(
+    "Cybb","Ncf1","Nos2"
+  )),
+
+  Inflammasome = toupper(c(
+    "Nlrp3","Pycard","Casp1"
+  )),
+
+  Adaptive_Immune_Suppression = toupper(c(
+    "Cd3d","Cd4","Cd8a","Il7r","H2-Aa","H2-Ab1"
+  ))
+)
+
+############################
+# NORMAL/CONTROLLED RESPONSE
+############################
+
+normal_signature_list <- list(
+
+  Controlled_Immune_Response = toupper(c(
+    "IL7R","CCR7","LTB","MALAT1"
+  )),
+
+  Tcell_Maintenance = toupper(c(
+    "CD3D","CD4","CD8A","IL7R","TRBC1"
+  )),
+
+  Antigen_Presentation = toupper(c(
+    "H2-AA","H2-AB1","CD74","CIITA"
+  )),
+
+  Homeostatic_Monocytes = toupper(c(
+    "LY86","FCER1G","CSF1R"
+  )),
+
+  Resolution_Response = toupper(c(
+    "IL10","TGFB1","MRC1"
+  )),
+
+  Oxidative_Metabolism = toupper(c(
+    "COX5A","NDUFA1","ATP5F1"
+  ))
+)
+
+############################
+# FUNCTION: LOAD DATA
+############################
+
+load_data <- function(file){
+
+  df <- read.csv(file, stringsAsFactors = FALSE)
+
+  colnames(df) <- tolower(colnames(df))
+
+  if(!all(c("gene","logfc") %in% colnames(df))){
+    stop(paste("Missing required columns in:", file))
+  }
+
+  df <- df %>%
+    dplyr::select(gene, logfc)
+
+  # FIX FOR CAPITALIZED GENE NAMES
+  df$gene <- toupper(as.character(df$gene))
+
+  # ENSURE NUMERIC
+  df$logfc <- as.numeric(df$logfc)
+
+  return(df)
+}
+
+############################
+# FUNCTION: SCORE SIGNATURES
+############################
+
+score_signatures <- function(df, sig_list, sample_name, category){
+
+  results <- data.frame()
+
+  for(sig in names(sig_list)){
+
+    genes <- sig_list[[sig]]
+
+    subset_df <- df %>%
+      filter(gene %in% genes)
+
+    detected_genes <- nrow(subset_df)
+
+    mean_logFC <- ifelse(
+      detected_genes > 0,
+      mean(subset_df$logfc, na.rm=TRUE),
+      NA
+    )
+
+    max_logFC <- ifelse(
+      detected_genes > 0,
+      max(subset_df$logfc, na.rm=TRUE),
+      NA
+    )
+
+    severity <- case_when(
+      is.na(mean_logFC) ~ "Not Detected",
+      mean_logFC >= 4 ~ "Extreme",
+      mean_logFC >= 2 ~ "High",
+      mean_logFC >= 1 ~ "Moderate",
+      mean_logFC > 0 ~ "Mild",
+      TRUE ~ "Suppressed"
+    )
+
+    temp <- data.frame(
+      Sample = sample_name,
+      Category = category,
+      Signature = sig,
+      Genes_Detected = detected_genes,
+      Mean_logFC = round(mean_logFC,2),
+      Max_logFC = round(max_logFC,2),
+      Severity = severity
+    )
+
+    results <- rbind(results, temp)
+  }
+
+  return(results)
+}
+
+############################
+# FUNCTION: CLASSIFY GENES
+############################
+
+classify_genes <- function(df, sig_list, sample_name, category){
+
+  all_classifications <- data.frame()
+
+  for(sig in names(sig_list)){
+
+    genes <- sig_list[[sig]]
+
+    subset_df <- df %>%
+      filter(gene %in% genes)
+
+    if(nrow(subset_df) > 0){
+
+      subset_df$Signature <- sig
+      subset_df$Category <- category
+      subset_df$Sample <- sample_name
+
+      subset_df$Expression_Class <- case_when(
+        subset_df$logfc >= 4 ~ "Extremely Upregulated",
+        subset_df$logfc >= 2 ~ "Strongly Upregulated",
+        subset_df$logfc >= 1 ~ "Moderately Upregulated",
+        subset_df$logfc > 0 ~ "Mildly Upregulated",
+        subset_df$logfc <= -2 ~ "Strongly Downregulated",
+        subset_df$logfc < 0 ~ "Downregulated",
+        TRUE ~ "Neutral"
+      )
+
+      all_classifications <- rbind(
+        all_classifications,
+        subset_df
+      )
+    }
+  }
+
+  return(all_classifications)
+}
+
+############################
+# PROCESS FILES
+############################
+
+all_scores <- data.frame()
+all_gene_classes <- data.frame()
+
+for(file in files){
+
+  sample_name <- tools::file_path_sans_ext(
+    basename(file)
+  )
+
+  cat("Processing:", sample_name, "\n")
+
+  df <- load_data(file)
+
+  severe_scores <- score_signatures(
+    df,
+    severe_signature_list,
+    sample_name,
+    "Severe_Response"
+  )
+
+  normal_scores <- score_signatures(
+    df,
+    normal_signature_list,
+    sample_name,
+    "Normal_Response"
+  )
+
+  severe_gene_classes <- classify_genes(
+    df,
+    severe_signature_list,
+    sample_name,
+    "Severe_Response"
+  )
+
+  normal_gene_classes <- classify_genes(
+    df,
+    normal_signature_list,
+    sample_name,
+    "Normal_Response"
+  )
+
+  all_scores <- rbind(
+    all_scores,
+    severe_scores,
+    normal_scores
+  )
+
+  all_gene_classes <- rbind(
+    all_gene_classes,
+    severe_gene_classes,
+    normal_gene_classes
+  )
+}
+
+############################
+# SAVE OUTPUT TABLES
+############################
+
+write.csv(
+  all_scores,
+  "All_Signature_Scores.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  all_gene_classes,
+  "Gene_Level_Classifications.csv",
+  row.names = FALSE
+)
+
+############################
+# SEVERE RESPONSE HEATMAP
+############################
+
+severe_heatmap_df <- all_scores %>%
+  filter(Category == "Severe_Response") %>%
+  dplyr::select(
+    Sample,
+    Signature,
+    Mean_logFC
+  )
+
+severe_heatmap_matrix <- dcast(
+  severe_heatmap_df,
+  Signature ~ Sample,
+  value.var = "Mean_logFC"
+)
+
+rownames(severe_heatmap_matrix) <-
+  severe_heatmap_matrix$Signature
+
+severe_heatmap_matrix$Signature <- NULL
+
+severe_heatmap_matrix <-
+  as.matrix(severe_heatmap_matrix)
+
+pheatmap(
+  severe_heatmap_matrix,
+  color = colorRampPalette(
+    rev(brewer.pal(9, "RdBu"))
+  )(100),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  fontsize_row = 10,
+  fontsize_col = 12,
+  main = "SEVERE INFECTION SIGNATURES"
+)
+
+############################
+# NORMAL RESPONSE HEATMAP
+############################
+
+normal_heatmap_df <- all_scores %>%
+  filter(Category == "Normal_Response") %>%
+  dplyr::select(
+    Sample,
+    Signature,
+    Mean_logFC
+  )
+
+normal_heatmap_matrix <- dcast(
+  normal_heatmap_df,
+  Signature ~ Sample,
+  value.var = "Mean_logFC"
+)
+
+rownames(normal_heatmap_matrix) <-
+  normal_heatmap_matrix$Signature
+
+normal_heatmap_matrix$Signature <- NULL
+
+normal_heatmap_matrix <-
+  as.matrix(normal_heatmap_matrix)
+
+pheatmap(
+  normal_heatmap_matrix,
+  color = colorRampPalette(
+    brewer.pal(9, "Blues")
+  )(100),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  fontsize_row = 10,
+  fontsize_col = 12,
+  main = "NORMAL / CONTROLLED IMMUNE RESPONSE"
+)
+
+############################
+# RADAR PLOTS
+############################
+
+samples <- unique(all_scores$Sample)
+
+for(samp in samples){
+
+  radar_df <- all_scores %>%
+    filter(
+      Sample == samp,
+      Category == "Severe_Response"
+    ) %>%
+    dplyr::select(Signature, Mean_logFC)
+
+  values <- radar_df$Mean_logFC
+  names(values) <- radar_df$Signature
+
+  values[is.na(values)] <- 0
+
+  radar_data <- rbind(
+    rep(5, length(values)),
+    rep(-2, length(values)),
+    values
+  )
+
+  colnames(radar_data) <- names(values)
+
+  png(
+    paste0(samp, "_Severe_RadarPlot.png"),
+    width = 900,
+    height = 900
+  )
+
+  radarchart(
+    radar_data,
+    axistype = 1,
+    pcol = "red",
+    pfcol = alpha("red", 0.3),
+    plwd = 3,
+    cglcol = "grey",
+    cglty = 1,
+    axislabcol = "black",
+    caxislabels = seq(-2,5,1),
+    cglwd = 0.8,
+    vlcex = 0.8,
+    title = paste(
+      "Severe Infection Profile:",
+      samp
+    )
+  )
+
+  dev.off()
+}
+
+############################
+# OVERALL SEVERITY SCORING
+############################
+
+severity_scores <- all_scores %>%
+  filter(Category == "Severe_Response") %>%
+  group_by(Sample) %>%
+  summarise(
+    Severe_Score = sum(
+      Mean_logFC,
+      na.rm=TRUE
+    )
+  )
+
+normal_scores <- all_scores %>%
+  filter(Category == "Normal_Response") %>%
+  group_by(Sample) %>%
+  summarise(
+    Normal_Response_Score = sum(
+      Mean_logFC,
+      na.rm=TRUE
+    )
+  )
+
+overall_scores <- merge(
+  severity_scores,
+  normal_scores,
+  by="Sample"
+)
+
+overall_scores$Overall_Classification <- case_when(
+
+  overall_scores$Severe_Score >= 25 ~
+    "Extreme Systemic Infection",
+
+  overall_scores$Severe_Score >= 15 ~
+    "Severe Infection",
+
+  overall_scores$Severe_Score >= 8 ~
+    "Moderate Infection",
+
+  overall_scores$Severe_Score >= 3 ~
+    "Mild Infection",
+
+  TRUE ~
+    "Minimal Infection"
+)
+
+############################
+# NORMAL VS SEVERE BIAS
+############################
+
+overall_scores$Response_Bias <- case_when(
+
+  overall_scores$Severe_Score >
+    overall_scores$Normal_Response_Score * 2 ~
+
+    "Strong Severe Inflammatory Bias",
+
+  overall_scores$Normal_Response_Score >
+    overall_scores$Severe_Score ~
+
+    "Controlled/Resolving Response",
+
+  TRUE ~
+
+    "Intermediate/Mixed Response"
+)
+
+write.csv(
+  overall_scores,
+  "Overall_Severity_Summary.csv",
+  row.names = FALSE
+)
+
+############################
+# BARPLOT:
+# NORMAL VS SEVERE RESPONSE
+############################
+
+comparison_df <- overall_scores %>%
+  dplyr::select(
+    Sample,
+    Severe_Score,
+    Normal_Response_Score
+  )
+
+comparison_melt <- melt(
+  comparison_df,
+  id.vars = "Sample"
+)
+
+ggplot(
+  comparison_melt,
+  aes(
+    x = Sample,
+    y = value,
+    fill = variable
+  )
+) +
+  geom_bar(
+    stat = "identity",
+    position = "dodge"
+  ) +
+  theme_bw() +
+  labs(
+    title = "Severe vs Normal Immune Response",
+    y = "Aggregate Signature Score",
+    fill = "Response Type"
+  )
+
+############################
+# FINAL SUMMARY
+############################
+
+cat("\n")
+cat("=========================================\n")
+cat("ANALYSIS COMPLETE\n")
+cat("=========================================\n")
+cat("\n")
+
+cat("Generated files:\n")
+cat("- All_Signature_Scores.csv\n")
+cat("- Gene_Level_Classifications.csv\n")
+cat("- Overall_Severity_Summary.csv\n")
+cat("- Severe radar plots\n")
+cat("- Severe response heatmap\n")
+cat("- Normal response heatmap\n")
+cat("- Severe vs normal comparison plot\n")
+
+cat("\n")
+
+###############################################################
+# BIOLOGICAL INTERPRETATION
+###############################################################
+
+# HIGH S100A8/S100A9/LCN2:
+#   Severe neutrophilic inflammation
+
+# HIGH IL6/TNF/IL1B:
+#   Hyperinflammatory cytokine response
+
+# HIGH STAT1/ISG15/IFIT1:
+#   Strong interferon activation
+
+# HIGH ARG1/IL10:
+#   Immunosuppressive myeloid state
+
+# HIGH HP/SAA1:
+#   Acute phase systemic response
+
+# HIGH C3/CFB/F3:
+#   Complement/coagulation activation
+
+# PRESERVED CD3D/CD4/CD8A:
+#   More controlled adaptive immunity
+
+# HIGH NORMAL RESPONSE SCORE:
+#   Potentially resolving or balanced response
+
+###############################################################
