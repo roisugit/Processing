@@ -1,0 +1,60 @@
+library(tidyverse)
+
+files <- c(
+  "file1.tsv", "file2.tsv", "file3.tsv", "file4.tsv", "file5.tsv",
+  "file6.tsv", "file7.tsv", "file8.tsv", "file9.tsv", "file10.tsv",
+  "file11.tsv"
+)
+
+hex_codes <- c(
+  "#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e",
+  "#e6ab02", "#a6761d", "#666666", "#1f78b4", "#b2df8a", "#fb9a99"
+)
+
+panel_names <- tools::file_path_sans_ext(basename(files))
+
+plot_df <- map2_dfr(files, panel_names, function(file, panel) {
+  read_tsv(file, show_col_types = FALSE, na = c("", "NA", "NaN")) %>%
+    slice_head(n = 10) %>%
+    transmute(
+      Term = as.character(.[[1]]),
+      Combined_Score = as.numeric(.[[8]]),
+      Panel = panel
+    ) %>%
+    filter(
+      !is.na(Term),
+      Term != "",
+      !is.na(Combined_Score)
+    )
+})
+
+plot_df <- plot_df %>%
+  group_by(Panel) %>%
+  mutate(Term = fct_reorder(Term, Combined_Score)) %>%
+  ungroup()
+
+p <- ggplot(plot_df, aes(x = Combined_Score, y = Term, fill = Panel)) +
+  geom_col(na.rm = TRUE) +
+  facet_wrap(~ Panel, scales = "free_y") +
+  scale_fill_manual(values = setNames(hex_codes, panel_names)) +
+  labs(
+    x = "Combined Score",
+    y = NULL,
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(face = "bold"),
+    legend.position = "none",
+    axis.text.y = element_text(size = 8)
+  )
+
+print(p)
+
+ggsave(
+  "paneled_barplot.png",
+  plot = p,
+  width = 14,
+  height = 10,
+  dpi = 300
+)
