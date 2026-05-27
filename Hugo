@@ -1,0 +1,87 @@
+# =========================================================
+# Cattle gene symbol -> Human ortholog converter
+# Reads gene symbols from first column of a CSV file
+# Writes mapped orthologs to output CSV
+# =========================================================
+
+# Install packages if needed
+# install.packages("BiocManager")
+# BiocManager::install("biomaRt")
+
+library(biomaRt)
+
+# -----------------------------
+# Input / Output files
+# -----------------------------
+input_file <- "cattle_genes.csv"
+output_file <- "cattle_to_human_orthologs.csv"
+
+# -----------------------------
+# Read input CSV
+# Assumes gene symbols are in FIRST column
+# -----------------------------
+input_data <- read.csv(input_file, stringsAsFactors = FALSE)
+
+# Extract first column
+cattle_genes <- input_data[[1]]
+
+# Remove missing values and duplicates
+cattle_genes <- unique(na.omit(cattle_genes))
+
+cat("Number of input genes:", length(cattle_genes), "\n")
+
+# -----------------------------
+# Connect to Ensembl BioMart
+# -----------------------------
+cattle <- useEnsembl(
+  biomart = "genes",
+  dataset = "btaurus_gene_ensembl"
+)
+
+human <- useEnsembl(
+  biomart = "genes",
+  dataset = "hsapiens_gene_ensembl"
+)
+
+# -----------------------------
+# Retrieve orthologs
+# -----------------------------
+orthologs <- getLDS(
+  attributes = c(
+    "external_gene_name",
+    "ensembl_gene_id"
+  ),
+  filters = "external_gene_name",
+  values = cattle_genes,
+  mart = cattle,
+
+  attributesL = c(
+    "hgnc_symbol",
+    "ensembl_gene_id"
+  ),
+  martL = human,
+
+  uniqueRows = TRUE
+)
+
+# -----------------------------
+# Rename columns
+# -----------------------------
+colnames(orthologs) <- c(
+  "cattle_gene_symbol",
+  "cattle_ensembl_gene_id",
+  "human_gene_symbol",
+  "human_ensembl_gene_id"
+)
+
+# -----------------------------
+# Save output
+# -----------------------------
+write.csv(
+  orthologs,
+  output_file,
+  row.names = FALSE
+)
+
+cat("Ortholog mapping complete.\n")
+cat("Results written to:", output_file, "\n")
