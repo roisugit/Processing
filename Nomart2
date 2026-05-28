@@ -36,8 +36,8 @@ def get_json(url, method="GET", payload=None):
 rows = []
 
 for idx, row in df_in.iterrows():
-    cattle_id = clean_value(row.iloc[12], upper=True)   # column 13 = cattle Ensembl ID
-    fallback_symbol = clean_value(row.iloc[10])         # column 11 = gene symbol
+    cattle_id = clean_value(row.iloc[12], upper=True)   # column 13
+    fallback_symbol = clean_value(row.iloc[10])         # column 11
 
     print(f"Processing: {cattle_id}")
 
@@ -61,7 +61,7 @@ for idx, row in df_in.iterrows():
                             "input_cattle_ensembl": cattle_id,
                             "fallback_input_symbol": fallback_symbol,
                             "human_ensembl": h["target"].get("id"),
-                            "human_symbol": None,
+                            "human_symbol": h["target"].get("display_id"),
                             "orthology_type": h.get("type"),
                             "mapping_status": "ENS_ID_TO_HUMAN_ORTHOLOG"
                         })
@@ -72,7 +72,7 @@ for idx, row in df_in.iterrows():
     else:
         error_msg = "Missing cattle Ensembl ID"
 
-    # 2. If ENS ID did not map, try cattle symbol -> human ortholog
+    # 2. If ENS ID did not map, try fallback cattle symbol -> human ortholog
     if not mapped and fallback_symbol:
         try:
             symbol_encoded = quote(fallback_symbol)
@@ -91,7 +91,7 @@ for idx, row in df_in.iterrows():
                             "input_cattle_ensembl": cattle_id,
                             "fallback_input_symbol": fallback_symbol,
                             "human_ensembl": h["target"].get("id"),
-                            "human_symbol": None,
+                            "human_symbol": h["target"].get("display_id"),
                             "orthology_type": h.get("type"),
                             "mapping_status": "FALLBACK_SYMBOL_TO_HUMAN_ORTHOLOG"
                         })
@@ -100,7 +100,7 @@ for idx, row in df_in.iterrows():
         except Exception as e:
             error_msg = str(e)
 
-    # 3. If no ortholog found, check whether the same symbol exists in humans
+    # 3. If no ortholog match, check if fallback symbol exists as a human gene symbol
     if not mapped and fallback_symbol:
         try:
             symbol_encoded = quote(fallback_symbol)
@@ -117,7 +117,7 @@ for idx, row in df_in.iterrows():
                     "input_cattle_ensembl": cattle_id,
                     "fallback_input_symbol": fallback_symbol,
                     "human_ensembl": data.get("id"),
-                    "human_symbol": None,
+                    "human_symbol": data.get("display_name"),
                     "orthology_type": None,
                     "mapping_status": "SYMBOL_PRESENT_IN_HUMAN_NOT_ORTHOLOG_MATCH"
                 })
@@ -142,7 +142,7 @@ for idx, row in df_in.iterrows():
 
 df = pd.DataFrame(rows)
 
-# Add human symbols for all mapped human Ensembl IDs
+# Final part: convert human Ensembl IDs to human gene symbols
 human_ids = df["human_ensembl"].dropna().drop_duplicates().tolist()
 
 lookup = {}
@@ -167,7 +167,7 @@ id_to_human_symbol = {
     if isinstance(v, dict)
 }
 
-df["human_symbol"] = df["human_ensembl"].map(id_to_human_symbol)
+df["human_gene_symbol_from_ensembl"] = df["human_ensembl"].map(id_to_human_symbol)
 
 df.to_csv(output_csv, index=False)
 
