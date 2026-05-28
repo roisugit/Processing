@@ -1,16 +1,32 @@
-import requests, pandas as pd, time
+import requests
+import pandas as pd
+import time
 
-genes = ["MSTN", "LEP", "DGAT1"]
+input_csv = "input_genes.csv"   # must contain a column named gene
+output_csv = "cattle_to_human_orthologs_with_symbols.csv"
+
+df_in = pd.read_csv(input_csv)
+
+genes = (
+    df_in["gene"]
+    .dropna()
+    .astype(str)
+    .str.strip()
+    .drop_duplicates()
+    .tolist()
+)
 
 def get_json(url, method="GET", payload=None):
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json"
     }
+
     if method == "POST":
         r = requests.post(url, headers=headers, json=payload)
     else:
         r = requests.get(url, headers=headers)
+
     r.raise_for_status()
     return r.json()
 
@@ -21,45 +37,70 @@ for g in genes:
         f"https://rest.ensembl.org/homology/symbol/bos_taurus/{g}"
         "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
     )
-    data = get_json(url)
 
-    for item in data.get("data", []):
-        for h in item.get("homologies", []):
-            rows.append({
-                "input_cattle_symbol": g,
-                "cattle_ensembl": h["source"]["id"],
-                "human_ensembl": h["target"]["id"],
-                "orthology_type": h.get("type"),
-                "human_perc_id": h["target"].get("perc_id"),
-                "cattle_perc_id": h["source"].get("perc_id")
-            })
+    try:
+        data = get_json(url)
+
+        for item in data.get("data", []):
+            for h in item.get("homologies", []):
+                rows.append({
+                    "input_cattle_symbol": g,
+                    "cattle_ensembl": h["source"]["id"],
+                    "human_ensembl": h["target"]["id"],
+                    "orthology_type": h.get("type"),
+                    "human_perc_id": h["target"].get("perc_id"),
+                    "cattle_perc_id": h["source"].get("perc_id")
+                })
+
+    except Exception as e:
+        rows.append({
+            "input_cattle_symbol": g,
+            "cattle_ensembl": None,
+            "human_ensembl": None,
+            "orthology_type": "ERROR",
+            "error": str(e)
+        })
 
     time.sleep(0.1)
 
 df = pd.DataFrame(rows)
 
-# Convert IDs to gene symbols/names
-all_ids = list(set(df["cattle_ensembl"]).union(df["human_ensembl"]))
+# Convert Ensembl IDs to symbols
+all_ids = pd.unique(
+    pd.concat([
+        df["cattle_ensembl"].dropna(),
+        df["human_ensembl"].dropna()
+    ])
+).tolist()
 
-lookup = get_json(
-    "https://rest.ensembl.org/lookup/id",
-    method="POST",
-    payload={"ids": all_ids}
-)
+lookup = {}
+
+# Ensembl POST lookup handles batches; keep batches modest
+for i in range(0, len(all_ids), 1000):
+    batch = all_ids[i:i+1000]
+    result = get_json(
+        "https://rest.ensembl.org/lookup/id",
+        method="POST",
+        payload={"ids": batch}
+    )
+    lookup.update(result)
+    time.sleep(0.1)
 
 id_to_symbol = {
     k: v.get("display_name")
     for k, v in lookup.items()
+    if isinstance(v, dict)
 }
 
 id_to_description = {
     k: v.get("description")
     for k, v in lookup.items()
+    if isinstance(v, dict)
 }
 
 df["cattle_symbol"] = df["cattle_ensembl"].map(id_to_symbol)
 df["human_symbol"] = df["human_ensembl"].map(id_to_symbol)
 df["human_description"] = df["human_ensembl"].map(id_to_description)
 
-df.to_csv("cattle_to_human_orthologs_with_symbols.csv", index=False)
+df.to_csv(output_csv, index=False)
 print(df)
