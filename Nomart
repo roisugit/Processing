@@ -1,36 +1,62 @@
-import requests, pandas as pd, time
+import requests, json, pandas as pd, time
 
 genes = ["MSTN", "LEP", "DGAT1"]
-rows = []
+all_rows = []
+raw = {}
+
+def flatten(d, prefix=""):
+    out = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            out.update(flatten(v, f"{prefix}{k}."))
+    elif isinstance(d, list):
+        out[prefix[:-1]] = json.dumps(d)
+    else:
+        out[prefix[:-1]] = d
+    return out
 
 for g in genes:
-    url = f"https://rest.ensembl.org/homology/symbol/bos_taurus/{g}"
-    params = {
-        "target_species": "homo_sapiens",
-        "type": "orthologues",
-        "format": "full"
-    }
+    url = (
+        f"https://rest.ensembl.org/homology/symbol/bos_taurus/{g}"
+        "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
+    )
 
-    r = requests.get(url, params=params, headers={"Content-Type": "application/json"})
+    r = requests.get(url, headers={"Content-Type": "application/json"})
+    print(g, r.status_code, r.url)
+    print(r.text[:1000])   # inspect first 1000 chars
+
     r.raise_for_status()
+    data = r.json()
+    raw[g] = data
 
-    for item in r.json().get("data", []):
+    for item in data.get("data", []):
+        source = item.get("source", {})
         for h in item.get("homologies", []):
             target = h.get("target", {})
-            source = h.get("source", {})
 
-            rows.append({
-                "cattle_input": g,
-                "cattle_ensembl": source.get("id"),
-                "cattle_symbol": source.get("display_id"),
-                "human_ensembl": target.get("id"),
-                "human_symbol": target.get("display_id"),
+            row = {
+                "input_gene": g,
+                "source_id": source.get("id") or item.get("id"),
+                "source_symbol": source.get("display_id"),
+                "target_id": target.get("id"),
+                "target_symbol": target.get("display_id"),
                 "orthology_type": h.get("type"),
-                "perc_id": target.get("perc_id")
-            })
+            }
 
-    time.sleep(0.1)
+            # add every other returned field too
+            row.update({f"source.{k}": v for k, v in flatten(source).items()})
+            row.update({f"target.{k}": v for k, v in flatten(target).items()})
+            row.update({f"homology.{k}": v for k, v in flatten(h).items()})
 
-df = pd.DataFrame(rows)
-df.to_csv("cattle_to_human_orthologs.csv", index=False)
-print(df)
+            all_rows.append(row)
+
+    time.sleep(0.2)
+
+with open("ensembl_raw_homology.json", "w") as f:
+    json.dump(raw, f, indent=2)
+
+df = pd.DataFrame(all_rows)
+df.to_csv("cattle_to_human_all_fields.csv", index=False)
+
+print(df.head())
+print(df.columns.tolist())
