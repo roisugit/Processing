@@ -2,13 +2,14 @@ import requests
 import pandas as pd
 import time
 
-input_csv = "input_genes.csv"   # must contain a column named ensembl_id
-output_csv = "cattle_to_human_orthologs_with_symbols.csv"
+input_csv = "input_genes.csv"
+output_csv = "cattle_ensembl_to_human_orthologs.csv"
 
 df_in = pd.read_csv(input_csv)
 
-ensembl_ids = (
-    df_in["ensembl_id"]
+# Column 13 = index 12
+cattle_ensembl_ids = (
+    df_in.iloc[:, 12]
     .dropna()
     .astype(str)
     .str.strip()
@@ -32,14 +33,14 @@ def get_json(url, method="GET", payload=None):
 
 rows = []
 
-# Get cattle Ensembl ID -> human orthologs
-for ensembl_id in ensembl_ids:
+# Map cattle Ensembl IDs directly to human orthologs
+for cattle_id in cattle_ensembl_ids:
     url = (
-        f"https://rest.ensembl.org/homology/id/{ensembl_id}"
+        f"https://rest.ensembl.org/homology/id/{cattle_id}"
         "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
     )
 
-    print(f"Processing: {ensembl_id}")
+    print(f"Processing: {cattle_id}")
 
     try:
         data = get_json(url)
@@ -47,22 +48,20 @@ for ensembl_id in ensembl_ids:
         for item in data.get("data", []):
             for h in item.get("homologies", []):
                 rows.append({
-                    "input_cattle_ensembl": ensembl_id,
-                    "cattle_ensembl": h["source"]["id"],
+                    "input_cattle_ensembl": cattle_id,
                     "human_ensembl": h["target"]["id"],
+                    "human_symbol": h["target"].get("display_id"),
                     "orthology_type": h.get("type"),
-                    "human_perc_id": h["target"].get("perc_id"),
-                    "cattle_perc_id": h["source"].get("perc_id")
+                    "human_perc_id": h["target"].get("perc_id")
                 })
 
     except Exception as e:
         rows.append({
-            "input_cattle_ensembl": ensembl_id,
-            "cattle_ensembl": None,
+            "input_cattle_ensembl": cattle_id,
             "human_ensembl": None,
+            "human_symbol": None,
             "orthology_type": "ERROR",
             "human_perc_id": None,
-            "cattle_perc_id": None,
             "error": str(e)
         })
 
@@ -70,18 +69,13 @@ for ensembl_id in ensembl_ids:
 
 df = pd.DataFrame(rows)
 
-# Convert Ensembl IDs to symbols/descriptions
-all_ids = pd.unique(
-    pd.concat([
-        df["cattle_ensembl"].dropna(),
-        df["human_ensembl"].dropna()
-    ])
-).tolist()
+# Optional: fill missing human symbols/descriptions from lookup/id
+human_ids = df["human_ensembl"].dropna().drop_duplicates().tolist()
 
 lookup = {}
 
-for i in range(0, len(all_ids), 1000):
-    batch = all_ids[i:i+1000]
+for i in range(0, len(human_ids), 1000):
+    batch = human_ids[i:i+1000]
 
     result = get_json(
         "https://rest.ensembl.org/lookup/id",
@@ -104,16 +98,8 @@ id_to_description = {
     if isinstance(v, dict)
 }
 
-df["cattle_symbol"] = df["cattle_ensembl"].map(id_to_symbol)
 df["human_symbol"] = df["human_ensembl"].map(id_to_symbol)
 df["human_description"] = df["human_ensembl"].map(id_to_description)
-
-# Compare input cattle Ensembl ID to returned cattle Ensembl ID
-df["input_matches_cattle_ensembl"] = (
-    df["input_cattle_ensembl"].astype(str).str.strip()
-    ==
-    df["cattle_ensembl"].astype(str).str.strip()
-)
 
 df.to_csv(output_csv, index=False)
 
