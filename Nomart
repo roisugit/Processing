@@ -1,14 +1,17 @@
 import requests
 import pandas as pd
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-input_csv = "input_genes.csv"   # must contain a column named gene
+input_csv = "input_genes.csv"
 output_csv = "cattle_to_human_orthologs_with_symbols.csv"
+max_workers = 8   # don't set too high; be polite to Ensembl
 
-df_in = pd.read_csv(input_csv)
+session = requests.Session()
+headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
 genes = (
-    df_in["gene"]
+    pd.read_csv(input_csv)["gene"]
     .dropna()
     .astype(str)
     .str.strip()
@@ -16,56 +19,83 @@ genes = (
     .tolist()
 )
 
-def get_json(url, method="GET", payload=None):
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    if method == "POST":
-        r = requests.post(url, headers=headers, json=payload)
-    else:
-        r = requests.get(url, headers=headers)
-
+def post_json(url, payload):
+    r = session.post(url, headers=headers, json=payload, timeout=30)
     r.raise_for_status()
     return r.json()
 
-rows = []
+def get_json(url):
+    r = session.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
-for g in genes:
+# 1) Batch cattle symbols -> cattle Ensembl IDs
+symbol_lookup = {}
+for i in range(0, len(genes), 1000):
+    batch = genes[i:i+1000]
+    result = post_json(
+        "https://rest.ensembl.org/lookup/symbol/bos_taurus",
+        {"symbols": batch}
+    )
+    symbol_lookup.update(result)
+    time.sleep(0.1)
+
+cattle_ids = []
+symbol_to_id = {}
+
+for symbol, records in symbol_lookup.items():
+    if isinstance(records, list):
+        for rec in records:
+            if rec.get("object_type") == "Gene":
+                cattle_ids.append(rec["id"])
+                symbol_to_id[symbol] = rec["id"]
+    elif isinstance(records, dict):
+        if records.get("object_type") == "Gene":
+            cattle_ids.append(records["id"])
+            symbol_to_id[symbol] = records["id"]
+
+cattle_ids = list(dict.fromkeys(cattle_ids))
+
+def fetch_homology(cattle_id):
     url = (
-        f"https://rest.ensembl.org/homology/symbol/bos_taurus/{g}"
+        f"https://rest.ensembl.org/homology/id/bos_taurus/{cattle_id}"
         "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
     )
-
     try:
         data = get_json(url)
-
+        rows = []
         for item in data.get("data", []):
             for h in item.get("homologies", []):
                 rows.append({
-                    "input_cattle_symbol": g,
                     "cattle_ensembl": h["source"]["id"],
                     "human_ensembl": h["target"]["id"],
                     "orthology_type": h.get("type"),
                     "human_perc_id": h["target"].get("perc_id"),
                     "cattle_perc_id": h["source"].get("perc_id")
                 })
-
+        return rows
     except Exception as e:
-        rows.append({
-            "input_cattle_symbol": g,
-            "cattle_ensembl": None,
+        return [{
+            "cattle_ensembl": cattle_id,
             "human_ensembl": None,
             "orthology_type": "ERROR",
             "error": str(e)
-        })
+        }]
 
-    time.sleep(0.1)
+# 2) Parallel homology calls
+rows = []
+with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    futures = [executor.submit(fetch_homology, cid) for cid in cattle_ids]
+    for fut in as_completed(futures):
+        rows.extend(fut.result())
 
 df = pd.DataFrame(rows)
 
-# Convert Ensembl IDs to symbols
+# Add original input symbol
+id_to_input_symbol = {v: k for k, v in symbol_to_id.items()}
+df["input_cattle_symbol"] = df["cattle_ensembl"].map(id_to_input_symbol)
+
+# 3) Batch Ensembl IDs -> symbols
 all_ids = pd.unique(
     pd.concat([
         df["cattle_ensembl"].dropna(),
@@ -74,16 +104,11 @@ all_ids = pd.unique(
 ).tolist()
 
 lookup = {}
-
-# Ensembl POST lookup handles batches; keep batches modest
-for i in range(0, len(all_ids), 1000):
+ for i in range(0, len(all_ids), 1000):
     batch = all_ids[i:i+1000]
-    result = get_json(
-        "https://rest.ensembl.org/lookup/id",
-        method="POST",
-        payload={"ids": batch}
+    lookup.update(
+        post_json("https://rest.ensembl.org/lookup/id", {"ids": batch})
     )
-    lookup.update(result)
     time.sleep(0.1)
 
 id_to_symbol = {
