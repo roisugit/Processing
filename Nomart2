@@ -36,12 +36,13 @@ def get_json(url, method="GET", payload=None):
 rows = []
 
 for idx, row in df_in.iterrows():
-    cattle_id = clean_value(row.iloc[12], upper=True)   # column 13
-    fallback_symbol = clean_value(row.iloc[10])         # column 11
+    cattle_id = clean_value(row.iloc[12], upper=True)   # column 13 = cattle Ensembl ID
+    fallback_symbol = clean_value(row.iloc[10])         # column 11 = gene symbol
 
     print(f"Processing: {cattle_id}")
 
     mapped = False
+    error_msg = None
 
     # 1. Try cattle Ensembl ID -> human ortholog
     if cattle_id:
@@ -60,7 +61,7 @@ for idx, row in df_in.iterrows():
                             "input_cattle_ensembl": cattle_id,
                             "fallback_input_symbol": fallback_symbol,
                             "human_ensembl": h["target"].get("id"),
-                            "human_symbol": h["target"].get("display_id"),
+                            "human_symbol": None,
                             "orthology_type": h.get("type"),
                             "mapping_status": "ENS_ID_TO_HUMAN_ORTHOLOG"
                         })
@@ -68,12 +69,10 @@ for idx, row in df_in.iterrows():
 
         except Exception as e:
             error_msg = str(e)
-        else:
-            error_msg = None
     else:
         error_msg = "Missing cattle Ensembl ID"
 
-    # 2. If ENS ID did not map, try fallback cattle symbol -> human ortholog
+    # 2. If ENS ID did not map, try cattle symbol -> human ortholog
     if not mapped and fallback_symbol:
         try:
             symbol_encoded = quote(fallback_symbol)
@@ -92,7 +91,7 @@ for idx, row in df_in.iterrows():
                             "input_cattle_ensembl": cattle_id,
                             "fallback_input_symbol": fallback_symbol,
                             "human_ensembl": h["target"].get("id"),
-                            "human_symbol": h["target"].get("display_id"),
+                            "human_symbol": None,
                             "orthology_type": h.get("type"),
                             "mapping_status": "FALLBACK_SYMBOL_TO_HUMAN_ORTHOLOG"
                         })
@@ -101,7 +100,7 @@ for idx, row in df_in.iterrows():
         except Exception as e:
             error_msg = str(e)
 
-    # 3. If fallback symbol has no cattle homolog, check if symbol exists in humans
+    # 3. If no ortholog found, check whether the same symbol exists in humans
     if not mapped and fallback_symbol:
         try:
             symbol_encoded = quote(fallback_symbol)
@@ -118,7 +117,7 @@ for idx, row in df_in.iterrows():
                     "input_cattle_ensembl": cattle_id,
                     "fallback_input_symbol": fallback_symbol,
                     "human_ensembl": data.get("id"),
-                    "human_symbol": data.get("display_name"),
+                    "human_symbol": None,
                     "orthology_type": None,
                     "mapping_status": "SYMBOL_PRESENT_IN_HUMAN_NOT_ORTHOLOG_MATCH"
                 })
@@ -127,7 +126,7 @@ for idx, row in df_in.iterrows():
         except Exception as e:
             error_msg = str(e)
 
-    # 4. Keep every input ENS number even if nothing maps
+    # 4. Keep every input ENS ID even if nothing maps
     if not mapped:
         rows.append({
             "input_cattle_ensembl": cattle_id,
@@ -142,6 +141,33 @@ for idx, row in df_in.iterrows():
     time.sleep(0.1)
 
 df = pd.DataFrame(rows)
+
+# Add human symbols for all mapped human Ensembl IDs
+human_ids = df["human_ensembl"].dropna().drop_duplicates().tolist()
+
+lookup = {}
+
+for i in range(0, len(human_ids), 1000):
+    batch = human_ids[i:i+1000]
+
+    result = get_json(
+        "https://rest.ensembl.org/lookup/id",
+        method="POST",
+        payload={"ids": batch}
+    )
+
+    if result:
+        lookup.update(result)
+
+    time.sleep(0.1)
+
+id_to_human_symbol = {
+    k: v.get("display_name")
+    for k, v in lookup.items()
+    if isinstance(v, dict)
+}
+
+df["human_symbol"] = df["human_ensembl"].map(id_to_human_symbol)
 
 df.to_csv(output_csv, index=False)
 
