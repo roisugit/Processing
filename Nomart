@@ -1,17 +1,15 @@
 import requests
 import pandas as pd
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-input_csv = "input_genes.csv"
+input_csv = "input_genes.csv"   # must contain a column named gene
 output_csv = "cattle_to_human_orthologs_with_symbols.csv"
-max_workers = 8   # don't set too high; be polite to Ensembl
 
-session = requests.Session()
-headers = {"Content-Type": "application/json", "Accept": "application/json"}
+# Read input genes
+df_in = pd.read_csv(input_csv)
 
 genes = (
-    pd.read_csv(input_csv)["gene"]
+    df_in["gene"]
     .dropna()
     .astype(str)
     .str.strip()
@@ -19,83 +17,62 @@ genes = (
     .tolist()
 )
 
-def post_json(url, payload):
-    r = session.post(url, headers=headers, json=payload, timeout=30)
+def get_json(url, method="GET", payload=None):
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    if method == "POST":
+        r = requests.post(url, headers=headers, json=payload)
+    else:
+        r = requests.get(url, headers=headers)
+
     r.raise_for_status()
     return r.json()
 
-def get_json(url):
-    r = session.get(url, headers=headers, timeout=30)
-    r.raise_for_status()
-    return r.json()
+rows = []
 
-# 1) Batch cattle symbols -> cattle Ensembl IDs
-symbol_lookup = {}
-for i in range(0, len(genes), 1000):
-    batch = genes[i:i+1000]
-    result = post_json(
-        "https://rest.ensembl.org/lookup/symbol/bos_taurus",
-        {"symbols": batch}
-    )
-    symbol_lookup.update(result)
-    time.sleep(0.1)
-
-cattle_ids = []
-symbol_to_id = {}
-
-for symbol, records in symbol_lookup.items():
-    if isinstance(records, list):
-        for rec in records:
-            if rec.get("object_type") == "Gene":
-                cattle_ids.append(rec["id"])
-                symbol_to_id[symbol] = rec["id"]
-    elif isinstance(records, dict):
-        if records.get("object_type") == "Gene":
-            cattle_ids.append(records["id"])
-            symbol_to_id[symbol] = records["id"]
-
-cattle_ids = list(dict.fromkeys(cattle_ids))
-
-def fetch_homology(cattle_id):
+# Get cattle -> human orthologs
+for g in genes:
     url = (
-        f"https://rest.ensembl.org/homology/id/bos_taurus/{cattle_id}"
+        f"https://rest.ensembl.org/homology/symbol/bos_taurus/{g}"
         "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
     )
+
+    print(f"Processing: {g}")
+
     try:
         data = get_json(url)
-        rows = []
+
         for item in data.get("data", []):
             for h in item.get("homologies", []):
+
                 rows.append({
+                    "input_cattle_symbol": g,
                     "cattle_ensembl": h["source"]["id"],
                     "human_ensembl": h["target"]["id"],
                     "orthology_type": h.get("type"),
                     "human_perc_id": h["target"].get("perc_id"),
                     "cattle_perc_id": h["source"].get("perc_id")
                 })
-        return rows
+
     except Exception as e:
-        return [{
-            "cattle_ensembl": cattle_id,
+        rows.append({
+            "input_cattle_symbol": g,
+            "cattle_ensembl": None,
             "human_ensembl": None,
             "orthology_type": "ERROR",
+            "human_perc_id": None,
+            "cattle_perc_id": None,
             "error": str(e)
-        }]
+        })
 
-# 2) Parallel homology calls
-rows = []
-with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    futures = [executor.submit(fetch_homology, cid) for cid in cattle_ids]
-    for fut in as_completed(futures):
-        rows.extend(fut.result())
+    time.sleep(0.1)
 
 df = pd.DataFrame(rows)
 
-# Add original input symbol
-id_to_input_symbol = {v: k for k, v in symbol_to_id.items()}
-df["input_cattle_symbol"] = df["cattle_ensembl"].map(id_to_input_symbol)
-
-# 3) Batch Ensembl IDs -> symbols
+# Convert Ensembl IDs to symbols/descriptions
 all_ids = pd.unique(
     pd.concat([
         df["cattle_ensembl"].dropna(),
@@ -104,13 +81,21 @@ all_ids = pd.unique(
 ).tolist()
 
 lookup = {}
- for i in range(0, len(all_ids), 1000):
+
+# Batch lookup
+for i in range(0, len(all_ids), 1000):
     batch = all_ids[i:i+1000]
-    lookup.update(
-        post_json("https://rest.ensembl.org/lookup/id", {"ids": batch})
+
+    result = get_json(
+        "https://rest.ensembl.org/lookup/id",
+        method="POST",
+        payload={"ids": batch}
     )
+
+    lookup.update(result)
     time.sleep(0.1)
 
+# Build ID -> symbol mappings
 id_to_symbol = {
     k: v.get("display_name")
     for k, v in lookup.items()
@@ -123,9 +108,160 @@ id_to_description = {
     if isinstance(v, dict)
 }
 
+# Add mapped symbols/descriptions
 df["cattle_symbol"] = df["cattle_ensembl"].map(id_to_symbol)
 df["human_symbol"] = df["human_ensembl"].map(id_to_symbol)
 df["human_description"] = df["human_ensembl"].map(id_to_description)
 
+# Compare original cattle symbol to mapped human symbol
+df["input_matches_human_symbol"] = (
+    df["input_cattle_symbol"].astype(str).str.upper().str.strip()
+    ==
+    df["human_symbol"].astype(str).str.upper().str.strip()
+)
+
+# Save output
 df.to_csv(output_csv, index=False)
-print(df)
+
+print(df.head())
+print(f"\nSaved results to: {output_csv}")
+
+
+
+
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(readr)
+
+input_csv <- "input_genes.csv"   # must contain column: gene
+output_csv <- "cattle_to_human_orthologs_with_symbols.csv"
+
+genes <- read_csv(input_csv, show_col_types = FALSE) %>%
+  pull(gene) %>%
+  na.omit() %>%
+  as.character() %>%
+  trimws() %>%
+  unique()
+
+get_json <- function(url, method = "GET", body = NULL) {
+  if (method == "POST") {
+    res <- POST(
+      url,
+      add_headers(
+        "Content-Type" = "application/json",
+        "Accept" = "application/json"
+      ),
+      body = toJSON(body, auto_unbox = TRUE)
+    )
+  } else {
+    res <- GET(
+      url,
+      add_headers(
+        "Content-Type" = "application/json",
+        "Accept" = "application/json"
+      )
+    )
+  }
+
+  stop_for_status(res)
+  fromJSON(content(res, as = "text", encoding = "UTF-8"), simplifyVector = FALSE)
+}
+
+rows <- list()
+
+for (g in genes) {
+  url <- paste0(
+    "https://rest.ensembl.org/homology/symbol/bos_taurus/", g,
+    "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
+  )
+
+  message("Processing: ", g)
+
+  tryCatch({
+    data <- get_json(url)
+
+    if (length(data$data) > 0) {
+      for (item in data$data) {
+        for (h in item$homologies) {
+          rows[[length(rows) + 1]] <- tibble(
+            input_cattle_symbol = g,
+            cattle_ensembl = h$source$id,
+            human_ensembl = h$target$id,
+            orthology_type = h$type,
+            human_perc_id = ifelse(is.null(h$target$perc_id), NA, h$target$perc_id),
+            cattle_perc_id = ifelse(is.null(h$source$perc_id), NA, h$source$perc_id),
+            error = NA_character_
+          )
+        }
+      }
+    } else {
+      rows[[length(rows) + 1]] <- tibble(
+        input_cattle_symbol = g,
+        cattle_ensembl = NA_character_,
+        human_ensembl = NA_character_,
+        orthology_type = "NO_ORTHOLOG_FOUND",
+        human_perc_id = NA_real_,
+        cattle_perc_id = NA_real_,
+        error = NA_character_
+      )
+    }
+
+  }, error = function(e) {
+    rows[[length(rows) + 1]] <<- tibble(
+      input_cattle_symbol = g,
+      cattle_ensembl = NA_character_,
+      human_ensembl = NA_character_,
+      orthology_type = "ERROR",
+      human_perc_id = NA_real_,
+      cattle_perc_id = NA_real_,
+      error = e$message
+    )
+  })
+
+  Sys.sleep(0.1)
+}
+
+df <- bind_rows(rows)
+
+all_ids <- unique(na.omit(c(df$cattle_ensembl, df$human_ensembl)))
+
+lookup <- list()
+
+if (length(all_ids) > 0) {
+  batches <- split(all_ids, ceiling(seq_along(all_ids) / 1000))
+
+  for (batch in batches) {
+    result <- get_json(
+      "https://rest.ensembl.org/lookup/id",
+      method = "POST",
+      body = list(ids = batch)
+    )
+
+    lookup <- c(lookup, result)
+    Sys.sleep(0.1)
+  }
+}
+
+id_to_symbol <- sapply(lookup, function(x) {
+  if (!is.null(x$display_name)) x$display_name else NA_character_
+})
+
+id_to_description <- sapply(lookup, function(x) {
+  if (!is.null(x$description)) x$description else NA_character_
+})
+
+df <- df %>%
+  mutate(
+    cattle_symbol = id_to_symbol[cattle_ensembl],
+    human_symbol = id_to_symbol[human_ensembl],
+    human_description = id_to_description[human_ensembl],
+    input_matches_human_symbol =
+      toupper(trimws(input_cattle_symbol)) ==
+      toupper(trimws(human_symbol))
+  )
+
+write_csv(df, output_csv)
+
+print(head(df))
+message("Saved results to: ", output_csv)
