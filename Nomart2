@@ -1,21 +1,20 @@
 import requests
 import pandas as pd
 import time
+from urllib.parse import quote
 
 input_csv = "input_genes.csv"
 output_csv = "cattle_ensembl_to_human_orthologs.csv"
 
 df_in = pd.read_csv(input_csv)
 
-# Column 13 = index 12
-cattle_ensembl_ids = (
-    df_in.iloc[:, 12]
-    .dropna()
-    .astype(str)
-    .str.strip()
-    .drop_duplicates()
-    .tolist()
-)
+def clean_value(x, upper=False):
+    if pd.isna(x):
+        return None
+    x = str(x).strip()
+    if x == "":
+        return None
+    return x.upper() if upper else x
 
 def get_json(url, method="GET", payload=None):
     headers = {
@@ -28,78 +27,121 @@ def get_json(url, method="GET", payload=None):
     else:
         r = requests.get(url, headers=headers)
 
+    if r.status_code == 404:
+        return None
+
     r.raise_for_status()
     return r.json()
 
 rows = []
 
-# Map cattle Ensembl IDs directly to human orthologs
-for cattle_id in cattle_ensembl_ids:
-    url = (
-        f"https://rest.ensembl.org/homology/id/{cattle_id}"
-        "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
-    )
+for idx, row in df_in.iterrows():
+    cattle_id = clean_value(row.iloc[12], upper=True)   # column 13
+    fallback_symbol = clean_value(row.iloc[10])         # column 11
 
     print(f"Processing: {cattle_id}")
 
-    try:
-        data = get_json(url)
+    mapped = False
 
-        for item in data.get("data", []):
-            for h in item.get("homologies", []):
+    # 1. Try cattle Ensembl ID -> human ortholog
+    if cattle_id:
+        try:
+            url = (
+                f"https://rest.ensembl.org/homology/id/bos_taurus/{cattle_id}"
+                "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
+            )
+
+            data = get_json(url)
+
+            if data:
+                for item in data.get("data", []):
+                    for h in item.get("homologies", []):
+                        rows.append({
+                            "input_cattle_ensembl": cattle_id,
+                            "fallback_input_symbol": fallback_symbol,
+                            "human_ensembl": h["target"].get("id"),
+                            "human_symbol": h["target"].get("display_id"),
+                            "orthology_type": h.get("type"),
+                            "mapping_status": "ENS_ID_TO_HUMAN_ORTHOLOG"
+                        })
+                        mapped = True
+
+        except Exception as e:
+            error_msg = str(e)
+        else:
+            error_msg = None
+    else:
+        error_msg = "Missing cattle Ensembl ID"
+
+    # 2. If ENS ID did not map, try fallback cattle symbol -> human ortholog
+    if not mapped and fallback_symbol:
+        try:
+            symbol_encoded = quote(fallback_symbol)
+
+            url = (
+                f"https://rest.ensembl.org/homology/symbol/bos_taurus/{symbol_encoded}"
+                "?target_species=homo_sapiens;type=orthologues;format=full;sequence=none"
+            )
+
+            data = get_json(url)
+
+            if data:
+                for item in data.get("data", []):
+                    for h in item.get("homologies", []):
+                        rows.append({
+                            "input_cattle_ensembl": cattle_id,
+                            "fallback_input_symbol": fallback_symbol,
+                            "human_ensembl": h["target"].get("id"),
+                            "human_symbol": h["target"].get("display_id"),
+                            "orthology_type": h.get("type"),
+                            "mapping_status": "FALLBACK_SYMBOL_TO_HUMAN_ORTHOLOG"
+                        })
+                        mapped = True
+
+        except Exception as e:
+            error_msg = str(e)
+
+    # 3. If fallback symbol has no cattle homolog, check if symbol exists in humans
+    if not mapped and fallback_symbol:
+        try:
+            symbol_encoded = quote(fallback_symbol)
+
+            url = (
+                f"https://rest.ensembl.org/lookup/symbol/homo_sapiens/{symbol_encoded}"
+                "?expand=0"
+            )
+
+            data = get_json(url)
+
+            if data:
                 rows.append({
                     "input_cattle_ensembl": cattle_id,
-                    "human_ensembl": h["target"]["id"],
-                    "human_symbol": h["target"].get("display_id"),
-                    "orthology_type": h.get("type"),
-                    "human_perc_id": h["target"].get("perc_id")
+                    "fallback_input_symbol": fallback_symbol,
+                    "human_ensembl": data.get("id"),
+                    "human_symbol": data.get("display_name"),
+                    "orthology_type": None,
+                    "mapping_status": "SYMBOL_PRESENT_IN_HUMAN_NOT_ORTHOLOG_MATCH"
                 })
+                mapped = True
 
-    except Exception as e:
+        except Exception as e:
+            error_msg = str(e)
+
+    # 4. Keep every input ENS number even if nothing maps
+    if not mapped:
         rows.append({
             "input_cattle_ensembl": cattle_id,
+            "fallback_input_symbol": fallback_symbol,
             "human_ensembl": None,
             "human_symbol": None,
-            "orthology_type": "ERROR",
-            "human_perc_id": None,
-            "error": str(e)
+            "orthology_type": None,
+            "mapping_status": "NO_HUMAN_MATCH_FOUND",
+            "error": error_msg
         })
 
     time.sleep(0.1)
 
 df = pd.DataFrame(rows)
-
-# Optional: fill missing human symbols/descriptions from lookup/id
-human_ids = df["human_ensembl"].dropna().drop_duplicates().tolist()
-
-lookup = {}
-
-for i in range(0, len(human_ids), 1000):
-    batch = human_ids[i:i+1000]
-
-    result = get_json(
-        "https://rest.ensembl.org/lookup/id",
-        method="POST",
-        payload={"ids": batch}
-    )
-
-    lookup.update(result)
-    time.sleep(0.1)
-
-id_to_symbol = {
-    k: v.get("display_name")
-    for k, v in lookup.items()
-    if isinstance(v, dict)
-}
-
-id_to_description = {
-    k: v.get("description")
-    for k, v in lookup.items()
-    if isinstance(v, dict)
-}
-
-df["human_symbol"] = df["human_ensembl"].map(id_to_symbol)
-df["human_description"] = df["human_ensembl"].map(id_to_description)
 
 df.to_csv(output_csv, index=False)
 
