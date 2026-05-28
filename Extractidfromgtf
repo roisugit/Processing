@@ -1,0 +1,31 @@
+# Input and output files
+gtf_file <- "input.gtf"
+out_file <- "geneid_gene_id_table.tsv"
+
+# Read GTF file
+gtf <- readLines(gtf_file)
+
+# Keep only lines containing GeneID:
+gtf_geneid <- gtf[grepl("GeneID:", gtf)]
+
+# Extract GeneID number after GeneID:
+GeneID <- sub(".*GeneID:([0-9]+).*", "\\1", gtf_geneid)
+
+# Extract gene_id value between quotes
+gene_id <- sub('.*gene_id "([^"]+)".*', "\\1", gtf_geneid)
+
+# Make table
+result <- data.frame(
+  GeneID = GeneID,
+  gene_id = gene_id,
+  stringsAsFactors = FALSE
+)
+
+# Write output
+write.table(
+  result,
+  file = out_file,
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
