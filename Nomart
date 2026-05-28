@@ -1,0 +1,30 @@
+import requests, pandas as pd, time
+
+genes = ["MSTN", "LEP", "DGAT1"]  # cattle gene symbols
+rows = []
+
+for g in genes:
+    url = f"https://rest.ensembl.org/homology/symbol/bos_taurus/{g}"
+    params = {
+        "target_species": "homo_sapiens",
+        "type": "orthologues",
+        "format": "condensed"
+    }
+    r = requests.get(url, params=params, headers={"Content-Type": "application/json"})
+    r.raise_for_status()
+    data = r.json()["data"]
+
+    for item in data:
+        for h in item.get("homologies", []):
+            rows.append({
+                "cattle_gene": g,
+                "cattle_ensembl": item.get("id"),
+                "human_ensembl": h["id"],
+                "human_symbol": h.get("target", {}).get("display_id"),
+                "orthology_type": h.get("type"),
+                "perc_id": h.get("target", {}).get("perc_id"),
+                "confidence": h.get("taxonomy_level")
+            })
+    time.sleep(0.1)
+
+pd.DataFrame(rows).to_csv("cattle_to_human_orthologs.csv", index=False)
