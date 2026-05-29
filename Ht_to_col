@@ -6,6 +6,11 @@ output_file <- "filtered_titles.csv"
 remove_file_has_header <- TRUE
 # --------------------------------------
 
+# Install if needed
+if (!requireNamespace("textutils", quietly = TRUE)) {
+  install.packages("textutils")
+}
+
 html_text <- paste(readLines(html_file, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
 
 matches <- gregexpr("title\\s*=\\s*(['\"])(.*?)\\1", html_text, perl = TRUE)
@@ -17,6 +22,9 @@ if (length(title_hits) == 0 || title_hits[1] == -1) {
   titles <- sub("title\\s*=\\s*(['\"])(.*?)\\1", "\\2", title_hits, perl = TRUE)
 }
 
+# Decode HTML entities like &amp;, &quot;, &and;, etc.
+titles <- textutils::HTMLdecode(titles)
+
 remove_df <- read.csv(
   remove_file,
   stringsAsFactors = FALSE,
@@ -24,6 +32,9 @@ remove_df <- read.csv(
 )
 
 remove_strings <- remove_df[[1]]
+
+# Decode entities in removal list too, just in case
+remove_strings <- textutils::HTMLdecode(remove_strings)
 
 titles_filtered <- titles[!titles %in% remove_strings]
 titles_filtered <- unique(titles_filtered)
