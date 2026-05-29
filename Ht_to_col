@@ -1,0 +1,37 @@
+# -------- EDIT THESE FILE PATHS --------
+html_file   <- "input.html"
+remove_file <- "remove_list.csv"
+output_file <- "filtered_titles.csv"
+
+remove_file_has_header <- TRUE
+# --------------------------------------
+
+html_text <- paste(readLines(html_file, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+
+matches <- gregexpr("title\\s*=\\s*(['\"])(.*?)\\1", html_text, perl = TRUE)
+title_hits <- regmatches(html_text, matches)[[1]]
+
+if (length(title_hits) == 0 || title_hits[1] == -1) {
+  titles <- character(0)
+} else {
+  titles <- sub("title\\s*=\\s*(['\"])(.*?)\\1", "\\2", title_hits, perl = TRUE)
+}
+
+remove_df <- read.csv(
+  remove_file,
+  stringsAsFactors = FALSE,
+  header = remove_file_has_header
+)
+
+remove_strings <- remove_df[[1]]
+
+titles_filtered <- titles[!titles %in% remove_strings]
+titles_filtered <- unique(titles_filtered)
+
+write.csv(
+  data.frame(title = titles_filtered),
+  output_file,
+  row.names = FALSE
+)
+
+cat("Done. Wrote", length(titles_filtered), "titles to:", output_file, "\n")
