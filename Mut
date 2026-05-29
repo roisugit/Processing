@@ -1,0 +1,12 @@
+group_order <- plot_df %>%
+  distinct(pathway_group) %>%
+  mutate(group_num = suppressWarnings(as.numeric(pathway_group))) %>%
+  arrange(is.na(group_num), group_num, pathway_group) %>%
+  pull(pathway_group)
+
+plot_df <- plot_df %>%
+  mutate(
+    pathway_group = factor(pathway_group, levels = group_order),
+    pathway = factor(pathway, levels = pathway_order),
+    color = factor(color, levels = color_order)
+  )
