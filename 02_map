@@ -1,0 +1,36 @@
+# File paths
+input1_file <- "input1.csv"
+input2_file <- "input2.csv"
+output_file <- "output.csv"
+
+# Read CSV files
+input1 <- read.csv(input1_file, header = TRUE, stringsAsFactors = FALSE)
+input2 <- read.csv(input2_file, header = TRUE, stringsAsFactors = FALSE)
+
+# Remove rows from input1 where column 5 is orthology_one2many
+input1_filtered <- input1[input1[[5]] != "orthology_one2many", ]
+
+# Make sure input2 has at least 17 columns
+while (ncol(input2) < 17) {
+  input2[[paste0("new_col_", ncol(input2) + 1)]] <- ""
+}
+
+# Name output columns 15, 16, and 17 based on input1 cols 1, 2, and 8
+names(input2)[15:17] <- names(input1)[c(1, 2, 8)]
+
+# Fill columns 15, 16, and 17
+for (i in seq_len(nrow(input2))) {
+  
+  match_idx <- which(input1_filtered[[1]] == input2[[13]][i])
+  
+  if (length(match_idx) == 0) {
+    match_idx <- which(input1_filtered[[2]] == input2[[1]][i])
+  }
+  
+  if (length(match_idx) > 0) {
+    input2[i, 15:17] <- input1_filtered[match_idx[1], c(1, 2, 8)]
+  }
+}
+
+# Save output
+write.csv(input2, output_file, row.names = FALSE)
