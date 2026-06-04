@@ -1,25 +1,20 @@
 # Install once if needed:
-# install.packages(c("pheatmap", "RColorBrewer"))
+# install.packages(c("pheatmap", "gridExtra", "grid"))
 
 library(pheatmap)
+library(grid)
+library(gridExtra)
 
-# ---------- USER SETTINGS ----------
 input_tsv_1 <- "D2_D0_input.tsv"
 input_tsv_2 <- "D7_D2_input.tsv"
 gene_color_tsv <- "gene_colors.tsv"
 
-output_prefix_1 <- "clustergram_D2_D0"
-output_prefix_2 <- "clustergram_D7_D2"
-# -----------------------------------
+output_png <- "clustergrams_side_by_side.png"
+output_pdf <- "clustergrams_side_by_side.pdf"
 
 read_gene_sets <- function(file) {
-  dat <- read.delim(
-    file,
-    header = TRUE,
-    sep = "\t",
-    stringsAsFactors = FALSE,
-    check.names = FALSE
-  )
+  dat <- read.delim(file, header = TRUE, sep = "\t",
+                    stringsAsFactors = FALSE, check.names = FALSE)
 
   dat10 <- dat[1:10, , drop = FALSE]
 
@@ -29,8 +24,7 @@ read_gene_sets <- function(file) {
   gene_sets <- lapply(gene_strings, function(x) {
     genes <- unlist(strsplit(x, ";"))
     genes <- trimws(genes)
-    genes <- genes[genes != "" & !is.na(genes)]
-    unique(genes)
+    unique(genes[genes != "" & !is.na(genes)])
   })
 
   names(gene_sets) <- group_names
@@ -46,87 +40,89 @@ make_presence_matrix <- function(gene_sets) {
 
   rownames(mat) <- all_genes
   colnames(mat) <- names(gene_sets)
-
   mat
 }
 
 read_gene_colors <- function(file) {
-  coldat <- read.delim(
-    file,
-    header = TRUE,
-    sep = "\t",
-    stringsAsFactors = FALSE,
-    check.names = FALSE
-  )
+  dat <- read.delim(file, header = TRUE, sep = "\t",
+                    stringsAsFactors = FALSE, check.names = FALSE)
 
-  gene_colors <- as.character(coldat[[2]])
-  names(gene_colors) <- as.character(coldat[[1]])
-
+  gene_colors <- as.character(dat[[2]])
+  names(gene_colors) <- as.character(dat[[1]])
   gene_colors
 }
 
-make_clustergram <- function(input_file, gene_color_file, figure_title, output_prefix) {
+make_colored_matrix <- function(mat, gene_colors) {
+  color_mat <- matrix("#FFFFFF", nrow = nrow(mat), ncol = ncol(mat))
+  rownames(color_mat) <- rownames(mat)
+  colnames(color_mat) <- colnames(mat)
+
+  for (gene in rownames(mat)) {
+    if (gene %in% names(gene_colors)) {
+      color_mat[gene, mat[gene, ] == 1] <- gene_colors[gene]
+    } else {
+      color_mat[gene, mat[gene, ] == 1] <- "#000000"
+    }
+  }
+
+  color_mat
+}
+
+make_heatmap_grob <- function(input_file, gene_colors, title) {
   gene_sets <- read_gene_sets(input_file)
   mat <- make_presence_matrix(gene_sets)
 
-  gene_colors <- read_gene_colors(gene_color_file)
+  row_order <- rownames(mat)
+  col_order <- colnames(mat)
 
-  row_box_colors <- gene_colors[rownames(mat)]
-  row_box_colors[is.na(row_box_colors)] <- "#FFFFFF"
+  color_mat <- make_colored_matrix(mat, gene_colors)
 
-  row_annotation <- data.frame(
-    GeneColor = rownames(mat)
+  # Convert unique colors to numeric values for pheatmap
+  unique_colors <- unique(as.vector(color_mat))
+  color_ids <- match(color_mat, unique_colors)
+
+  numeric_mat <- matrix(
+    color_ids,
+    nrow = nrow(color_mat),
+    ncol = ncol(color_mat),
+    dimnames = dimnames(color_mat)
   )
-  rownames(row_annotation) <- rownames(mat)
 
-  annotation_colors <- list(
-    GeneColor = setNames(row_box_colors, rownames(mat))
-  )
-
-  pheatmap(
-    mat,
-    cluster_rows = TRUE,
-    cluster_cols = TRUE,
-    color = c("#FFFFFF", "#222222"),
-    breaks = c(-0.01, 0.5, 1.01),
-    border_color = "grey80",
+  p <- pheatmap(
+    numeric_mat,
+    color = unique_colors,
+    breaks = seq(0.5, length(unique_colors) + 0.5, by = 1),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    treeheight_row = 0,
+    treeheight_col = 0,
+    legend = FALSE,
     show_rownames = TRUE,
     show_colnames = TRUE,
+    labels_row = row_order,
+    labels_col = col_order,
     fontsize_row = 7,
     fontsize_col = 10,
     angle_col = 45,
-    main = figure_title,
-    annotation_row = row_annotation,
-    annotation_colors = annotation_colors,
-    legend = FALSE,
-    filename = paste0(output_prefix, ".png"),
-    width = 10,
-    height = 12
+    border_color = "grey80",
+    main = title,
+    silent = TRUE
   )
 
-  pheatmap(
-    mat,
-    cluster_rows = TRUE,
-    cluster_cols = TRUE,
-    color = c("#FFFFFF", "#222222"),
-    breaks = c(-0.01, 0.5, 1.01),
-    border_color = "grey80",
-    show_rownames = TRUE,
-    show_colnames = TRUE,
-    fontsize_row = 7,
-    fontsize_col = 10,
-    angle_col = 45,
-    main = figure_title,
-    annotation_row = row_annotation,
-    annotation_colors = annotation_colors,
-    legend = FALSE,
-    filename = paste0(output_prefix, ".pdf"),
-    width = 10,
-    height = 12
-  )
+  p$gtable
 }
 
-make_clustergram(input_tsv_1, gene_color_tsv, "D2-D0", output_prefix_1)
-make_clustergram(input_tsv_2, gene_color_tsv, "D7-D2", output_prefix_2)
+gene_colors <- read_gene_colors(gene_color_tsv)
 
-message("Done: PNG and PDF files created for both clustergrams.")
+fig1 <- make_heatmap_grob(input_tsv_1, gene_colors, "D2-D0")
+fig2 <- make_heatmap_grob(input_tsv_2, gene_colors, "D7-D2")
+
+png(output_png, width = 3200, height = 1800, res = 200)
+grid.arrange(fig1, fig2, ncol = 2)
+dev.off()
+
+pdf(output_pdf, width = 16, height = 9)
+grid.arrange(fig1, fig2, ncol = 2)
+dev.off()
+
+message("Done: created ", output_png, " and ", output_pdf)
