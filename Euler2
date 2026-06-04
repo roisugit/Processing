@@ -1,16 +1,16 @@
 # Install once if needed:
-# install.packages(c("pheatmap", "grid"))
+# install.packages(c("ggplot2", "dplyr"))
 
-library(pheatmap)
-library(grid)
+library(ggplot2)
+library(dplyr)
 
 input_tsv_1 <- "D2_D0_input.tsv"
 input_tsv_2 <- "D7_D2_input.tsv"
 input_tsv_3 <- "D7_D0_input.tsv"
 gene_color_tsv <- "gene_colors.tsv"
 
-output_png <- "clustergram_All_Days.png"
-output_pdf <- "clustergram_All_Days.pdf"
+output_png <- "composition_All_Days.png"
+output_pdf <- "composition_All_Days.pdf"
 
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
@@ -54,101 +54,44 @@ combine_gene_sets <- function(gs1, gs2) {
   combined
 }
 
-make_presence_matrix_top20 <- function(gene_sets) {
-  all_genes <- unique(unlist(gene_sets))
+make_plot_data <- function(gene_sets, gene_colors) {
+  df <- bind_rows(lapply(names(gene_sets), function(group) {
+    genes <- gene_sets[[group]]
 
-  mat <- sapply(gene_sets, function(g) {
-    as.integer(all_genes %in% g)
-  })
+    data.frame(
+      Group = group,
+      Gene = genes,
+      stringsAsFactors = FALSE
+    )
+  }))
 
-  rownames(mat) <- all_genes
-  colnames(mat) <- names(gene_sets)
+  df$Color <- gene_colors[df$Gene]
+  df$Color[is.na(df$Color)] <- "#999999"
 
-  gene_counts <- rowSums(mat)
-  top_genes <- names(sort(gene_counts, decreasing = TRUE))[1:min(20, length(gene_counts))]
+  df <- df %>%
+    group_by(Group) %>%
+    mutate(
+      GeneCount = n(),
+      SegmentHeight = 1 / GeneCount
+    ) %>%
+    ungroup()
 
-  mat[top_genes, , drop = FALSE]
-}
+  # Order groups by most genes on left, least genes on right
+  group_order <- df %>%
+    distinct(Group, GeneCount) %>%
+    arrange(desc(GeneCount)) %>%
+    pull(Group)
 
-order_matrix <- function(mat) {
-  col_order <- order(colSums(mat), decreasing = TRUE)
-  mat <- mat[, col_order, drop = FALSE]
+  # Keep like colors near each other within each group
+  df <- df %>%
+    mutate(
+      Group = factor(Group, levels = group_order)
+    ) %>%
+    arrange(Group, Color, Gene)
 
-  if (nrow(mat) > 1) {
-    row_order <- hclust(dist(mat, method = "binary"), method = "average")$order
-    mat <- mat[row_order, , drop = FALSE]
-  }
+  df$Gene <- factor(df$Gene, levels = unique(df$Gene))
 
-  mat
-}
-
-make_colored_matrix <- function(mat, gene_colors) {
-  color_mat <- matrix("#FFFFFF", nrow = nrow(mat), ncol = ncol(mat),
-                      dimnames = dimnames(mat))
-
-  for (gene in rownames(mat)) {
-    fill_color <- ifelse(gene %in% names(gene_colors),
-                         gene_colors[gene],
-                         "#000000")
-
-    color_mat[gene, mat[gene, ] == 1] <- fill_color
-  }
-
-  color_mat
-}
-
-make_clustergram <- function(gene_sets, gene_colors, title, output_png, output_pdf) {
-  mat <- make_presence_matrix_top20(gene_sets)
-  mat <- order_matrix(mat)
-
-  color_mat <- make_colored_matrix(mat, gene_colors)
-
-  unique_colors <- unique(as.vector(color_mat))
-  color_ids <- match(color_mat, unique_colors)
-
-  numeric_mat <- matrix(
-    color_ids,
-    nrow = nrow(color_mat),
-    ncol = ncol(color_mat),
-    dimnames = dimnames(color_mat)
-  )
-
-  p <- pheatmap(
-    numeric_mat,
-    color = unique_colors,
-    breaks = seq(0.5, length(unique_colors) + 0.5, by = 1),
-    cluster_rows = FALSE,
-    cluster_cols = FALSE,
-    treeheight_row = 0,
-    treeheight_col = 0,
-    legend = FALSE,
-    show_rownames = TRUE,
-    show_colnames = TRUE,
-    fontsize_row = 9,
-    fontsize_col = 10,
-    angle_col = 45,
-    border_color = "grey80",
-    cellwidth = 22,
-    cellheight = 22,
-    main = title,
-    silent = TRUE
-  )
-
-  for (i in seq_along(p$gtable$grobs)) {
-    if (p$gtable$layout$name[i] %in% c("row_names", "col_names")) {
-      p$gtable$grobs[[i]]$gp <- gpar(fontface = "bold")
-    }
-  }
-
-  png(output_png, width = 1800, height = 1400, res = 200)
-  grid.newpage()
-  grid.draw(p$gtable)
-  dev.off()
-
-  pdf(output_pdf, width = 9, height = 7)
-  grid.newpage()
-  grid.draw(p$gtable)
-  dev.off()
+  df
 }
 
 gene_sets_1 <- read_gene_sets(input_tsv_1)
@@ -162,12 +105,46 @@ gene_sets_all <- combine_gene_sets(
 
 gene_colors <- read_gene_colors(gene_color_tsv)
 
-make_clustergram(
-  gene_sets = gene_sets_all,
-  gene_colors = gene_colors,
-  title = "All Days",
-  output_png = output_png,
-  output_pdf = output_pdf
-)
+plot_df <- make_plot_data(gene_sets_all, gene_colors)
+
+p <- ggplot(plot_df, aes(x = Group, y = SegmentHeight, fill = Gene)) +
+  geom_bar(
+    stat = "identity",
+    width = 0.85,
+    color = "white",
+    linewidth = 0.25,
+    position = "stack"
+  ) +
+  geom_text(
+    aes(label = Gene),
+    position = position_stack(vjust = 0.5),
+    size = 2.5,
+    fontface = "bold",
+    color = "black"
+  ) +
+  scale_fill_manual(values = setNames(plot_df$Color, plot_df$Gene)) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    expand = c(0, 0),
+    labels = NULL,
+    breaks = NULL
+  ) +
+  labs(
+    title = "All Days",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 18),
+    axis.text.x = element_text(face = "bold", size = 11, angle = 45, hjust = 1),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.line = element_blank()
+  )
+
+ggsave(output_png, p, width = 12, height = 8, dpi = 300)
+ggsave(output_pdf, p, width = 12, height = 8)
 
 message("Done: created ", output_png, " and ", output_pdf)
