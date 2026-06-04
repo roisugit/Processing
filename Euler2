@@ -6,10 +6,11 @@ library(grid)
 
 input_tsv_1 <- "D2_D0_input.tsv"
 input_tsv_2 <- "D7_D2_input.tsv"
+input_tsv_3 <- "D7_D0_input.tsv"
 gene_color_tsv <- "gene_colors.tsv"
 
-output_png_1 <- "clustergram_D2_D0.png"
-output_png_2 <- "clustergram_D7_D2.png"
+output_png <- "clustergram_All_Days.png"
+output_pdf <- "clustergram_All_Days.pdf"
 
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
@@ -30,16 +31,6 @@ read_gene_sets <- function(file) {
   gene_sets
 }
 
-make_presence_matrix <- function(gene_sets) {
-  all_genes <- unique(unlist(gene_sets))
-
-  mat <- sapply(gene_sets, function(g) as.integer(all_genes %in% g))
-
-  rownames(mat) <- all_genes
-  colnames(mat) <- names(gene_sets)
-  mat
-}
-
 read_gene_colors <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
                     stringsAsFactors = FALSE, check.names = FALSE)
@@ -49,12 +40,40 @@ read_gene_colors <- function(file) {
   gene_colors
 }
 
+combine_gene_sets <- function(gs1, gs2) {
+  all_group_names <- unique(c(names(gs1), names(gs2)))
+
+  combined <- lapply(all_group_names, function(group) {
+    unique(c(
+      if (group %in% names(gs1)) gs1[[group]] else character(0),
+      if (group %in% names(gs2)) gs2[[group]] else character(0)
+    ))
+  })
+
+  names(combined) <- all_group_names
+  combined
+}
+
+make_presence_matrix_top20 <- function(gene_sets) {
+  all_genes <- unique(unlist(gene_sets))
+
+  mat <- sapply(gene_sets, function(g) {
+    as.integer(all_genes %in% g)
+  })
+
+  rownames(mat) <- all_genes
+  colnames(mat) <- names(gene_sets)
+
+  gene_counts <- rowSums(mat)
+  top_genes <- names(sort(gene_counts, decreasing = TRUE))[1:min(20, length(gene_counts))]
+
+  mat[top_genes, , drop = FALSE]
+}
+
 order_matrix <- function(mat) {
-  # Groups: most genes on the left, least on the right
   col_order <- order(colSums(mat), decreasing = TRUE)
   mat <- mat[, col_order, drop = FALSE]
 
-  # Genes: cluster-like order to keep shared patterns together
   if (nrow(mat) > 1) {
     row_order <- hclust(dist(mat, method = "binary"), method = "average")$order
     mat <- mat[row_order, , drop = FALSE]
@@ -78,9 +97,8 @@ make_colored_matrix <- function(mat, gene_colors) {
   color_mat
 }
 
-make_clustergram <- function(input_file, gene_colors, title, output_png) {
-  gene_sets <- read_gene_sets(input_file)
-  mat <- make_presence_matrix(gene_sets)
+make_clustergram <- function(gene_sets, gene_colors, title, output_png, output_pdf) {
+  mat <- make_presence_matrix_top20(gene_sets)
   mat <- order_matrix(mat)
 
   color_mat <- make_colored_matrix(mat, gene_colors)
@@ -106,12 +124,12 @@ make_clustergram <- function(input_file, gene_colors, title, output_png) {
     legend = FALSE,
     show_rownames = TRUE,
     show_colnames = TRUE,
-    fontsize_row = 8,
+    fontsize_row = 9,
     fontsize_col = 10,
     angle_col = 45,
     border_color = "grey80",
-    cellwidth = 18,
-    cellheight = 18,
+    cellwidth = 22,
+    cellheight = 22,
     main = title,
     silent = TRUE
   )
@@ -122,15 +140,34 @@ make_clustergram <- function(input_file, gene_colors, title, output_png) {
     }
   }
 
-  png(output_png, width = 1800, height = max(1200, 40 * nrow(mat)), res = 200)
+  png(output_png, width = 1800, height = 1400, res = 200)
+  grid.newpage()
+  grid.draw(p$gtable)
+  dev.off()
+
+  pdf(output_pdf, width = 9, height = 7)
   grid.newpage()
   grid.draw(p$gtable)
   dev.off()
 }
 
+gene_sets_1 <- read_gene_sets(input_tsv_1)
+gene_sets_2 <- read_gene_sets(input_tsv_2)
+gene_sets_3 <- read_gene_sets(input_tsv_3)
+
+gene_sets_all <- combine_gene_sets(
+  combine_gene_sets(gene_sets_1, gene_sets_2),
+  gene_sets_3
+)
+
 gene_colors <- read_gene_colors(gene_color_tsv)
 
-make_clustergram(input_tsv_1, gene_colors, "D2-D0", output_png_1)
-make_clustergram(input_tsv_2, gene_colors, "D7-D2", output_png_2)
+make_clustergram(
+  gene_sets = gene_sets_all,
+  gene_colors = gene_colors,
+  title = "All Days",
+  output_png = output_png,
+  output_pdf = output_pdf
+)
 
-message("Done: created ", output_png_1, " and ", output_png_2)
+message("Done: created ", output_png, " and ", output_pdf)
