@@ -9,10 +9,10 @@ input_tsv_2 <- "D7_D2_input.tsv"
 input_tsv_3 <- "D7_D0_input.tsv"
 gene_color_tsv <- "gene_colors.tsv"
 
-output_png <- "composition_All_Days.png"
-output_pdf <- "composition_All_Days.pdf"
+output_png <- "gene_boxes_All_Days.png"
+output_pdf <- "gene_boxes_All_Days.pdf"
 
-# Hardcode your 11 colors in the exact order you want them stacked
+# Hardcode your 11 colors in the exact order you want
 color_order <- c(
   "#111111",
   "#222222",
@@ -50,7 +50,7 @@ read_gene_colors <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
                     stringsAsFactors = FALSE, check.names = FALSE)
 
-  gene_colors <- as.character(dat[[2]])
+  gene_colors <- toupper(as.character(dat[[2]]))
   names(gene_colors) <- as.character(dat[[1]])
   gene_colors
 }
@@ -70,12 +70,12 @@ combine_gene_sets <- function(gs1, gs2) {
 }
 
 make_plot_data <- function(gene_sets, gene_colors, color_order) {
-  df <- bind_rows(lapply(names(gene_sets), function(group) {
-    genes <- gene_sets[[group]]
+  color_order <- toupper(color_order)
 
+  df <- bind_rows(lapply(names(gene_sets), function(group) {
     data.frame(
       Group = group,
-      Gene = genes,
+      Gene = gene_sets[[group]],
       stringsAsFactors = FALSE
     )
   }))
@@ -83,30 +83,31 @@ make_plot_data <- function(gene_sets, gene_colors, color_order) {
   df$Color <- gene_colors[df$Gene]
   df$Color[is.na(df$Color)] <- "#999999"
 
-  df$ColorRank <- match(toupper(df$Color), toupper(color_order))
+  df$ColorRank <- match(df$Color, color_order)
   df$ColorRank[is.na(df$ColorRank)] <- length(color_order) + 1
 
   df <- df %>%
     group_by(Group) %>%
-    mutate(
-      GeneCount = n(),
-      SegmentHeight = 1 / GeneCount
-    ) %>%
+    mutate(GeneCount = n()) %>%
+    arrange(ColorRank, Gene, .by_group = TRUE) %>%
+    mutate(BoxNumber = row_number()) %>%
     ungroup()
 
-  # Groups: most genes on left, least on right
   group_order <- df %>%
     distinct(Group, GeneCount) %>%
     arrange(desc(GeneCount)) %>%
     pull(Group)
 
-  # Consistent stacking order across every group:
-  # first by hardcoded color order, then gene name within color
   df <- df %>%
-    mutate(Group = factor(Group, levels = group_order)) %>%
-    arrange(Group, ColorRank, Gene)
-
-  df$Gene <- factor(df$Gene, levels = unique(df$Gene))
+    mutate(
+      Group = factor(Group, levels = group_order),
+      GroupX = as.numeric(Group),
+      xmin = GroupX - 0.5,
+      xmax = GroupX + 0.5,
+      ymin = BoxNumber - 1,
+      ymax = BoxNumber,
+      ymid = BoxNumber - 0.5
+    )
 
   df
 }
@@ -121,32 +122,34 @@ gene_sets_all <- combine_gene_sets(
 )
 
 gene_colors <- read_gene_colors(gene_color_tsv)
-
 plot_df <- make_plot_data(gene_sets_all, gene_colors, color_order)
 
-p <- ggplot(plot_df, aes(x = Group, y = SegmentHeight, fill = Gene)) +
-  geom_bar(
-    stat = "identity",
-    width = 1,
+p <- ggplot(plot_df) +
+  geom_rect(
+    aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = Gene),
     color = "white",
-    linewidth = 0.25,
-    position = "stack"
+    linewidth = 0.25
   ) +
-  geom_text(
-    aes(label = Gene),
-    position = position_stack(vjust = 0.5),
-    size = 2.4,
+  geom_label(
+    aes(x = GroupX, y = ymid, label = Gene),
+    fill = "white",
+    color = "black",
     fontface = "bold",
-    color = "black"
+    size = 2.3,
+    label.size = 0.15,
+    label.padding = unit(0.08, "lines")
   ) +
   scale_fill_manual(values = setNames(plot_df$Color, plot_df$Gene)) +
-  scale_y_continuous(
-    limits = c(0, 1),
-    expand = c(0, 0),
-    breaks = NULL,
-    labels = NULL
+  scale_x_continuous(
+    breaks = seq_along(levels(plot_df$Group)),
+    labels = levels(plot_df$Group),
+    expand = c(0, 0)
   ) +
-  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_continuous(
+    expand = c(0, 0),
+    breaks = NULL
+  ) +
+  coord_fixed(ratio = 1) +
   labs(
     title = "All Days",
     x = NULL,
@@ -159,11 +162,10 @@ p <- ggplot(plot_df, aes(x = Group, y = SegmentHeight, fill = Gene)) +
     axis.text.x = element_text(face = "bold", size = 11, angle = 45, hjust = 1),
     axis.text.y = element_blank(),
     axis.ticks = element_blank(),
-    axis.line = element_blank(),
-    plot.margin = margin(10, 10, 10, 10)
+    axis.line = element_blank()
   )
 
-ggsave(output_png, p, width = 12, height = 8, dpi = 300)
-ggsave(output_pdf, p, width = 12, height = 8)
+ggsave(output_png, p, width = 10, height = 12, dpi = 300)
+ggsave(output_pdf, p, width = 10, height = 12)
 
 message("Done: created ", output_png, " and ", output_pdf)
