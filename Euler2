@@ -12,6 +12,21 @@ gene_color_tsv <- "gene_colors.tsv"
 output_png <- "composition_All_Days.png"
 output_pdf <- "composition_All_Days.pdf"
 
+# Hardcode your 11 colors in the exact order you want them stacked
+color_order <- c(
+  "#111111",
+  "#222222",
+  "#333333",
+  "#444444",
+  "#555555",
+  "#666666",
+  "#777777",
+  "#888888",
+  "#999999",
+  "#AAAAAA",
+  "#BBBBBB"
+)
+
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
                     stringsAsFactors = FALSE, check.names = FALSE)
@@ -54,7 +69,7 @@ combine_gene_sets <- function(gs1, gs2) {
   combined
 }
 
-make_plot_data <- function(gene_sets, gene_colors) {
+make_plot_data <- function(gene_sets, gene_colors, color_order) {
   df <- bind_rows(lapply(names(gene_sets), function(group) {
     genes <- gene_sets[[group]]
 
@@ -68,6 +83,9 @@ make_plot_data <- function(gene_sets, gene_colors) {
   df$Color <- gene_colors[df$Gene]
   df$Color[is.na(df$Color)] <- "#999999"
 
+  df$ColorRank <- match(toupper(df$Color), toupper(color_order))
+  df$ColorRank[is.na(df$ColorRank)] <- length(color_order) + 1
+
   df <- df %>%
     group_by(Group) %>%
     mutate(
@@ -76,18 +94,17 @@ make_plot_data <- function(gene_sets, gene_colors) {
     ) %>%
     ungroup()
 
-  # Order groups by most genes on left, least genes on right
+  # Groups: most genes on left, least on right
   group_order <- df %>%
     distinct(Group, GeneCount) %>%
     arrange(desc(GeneCount)) %>%
     pull(Group)
 
-  # Keep like colors near each other within each group
+  # Consistent stacking order across every group:
+  # first by hardcoded color order, then gene name within color
   df <- df %>%
-    mutate(
-      Group = factor(Group, levels = group_order)
-    ) %>%
-    arrange(Group, Color, Gene)
+    mutate(Group = factor(Group, levels = group_order)) %>%
+    arrange(Group, ColorRank, Gene)
 
   df$Gene <- factor(df$Gene, levels = unique(df$Gene))
 
@@ -105,12 +122,12 @@ gene_sets_all <- combine_gene_sets(
 
 gene_colors <- read_gene_colors(gene_color_tsv)
 
-plot_df <- make_plot_data(gene_sets_all, gene_colors)
+plot_df <- make_plot_data(gene_sets_all, gene_colors, color_order)
 
 p <- ggplot(plot_df, aes(x = Group, y = SegmentHeight, fill = Gene)) +
   geom_bar(
     stat = "identity",
-    width = 0.85,
+    width = 1,
     color = "white",
     linewidth = 0.25,
     position = "stack"
@@ -118,7 +135,7 @@ p <- ggplot(plot_df, aes(x = Group, y = SegmentHeight, fill = Gene)) +
   geom_text(
     aes(label = Gene),
     position = position_stack(vjust = 0.5),
-    size = 2.5,
+    size = 2.4,
     fontface = "bold",
     color = "black"
   ) +
@@ -126,9 +143,10 @@ p <- ggplot(plot_df, aes(x = Group, y = SegmentHeight, fill = Gene)) +
   scale_y_continuous(
     limits = c(0, 1),
     expand = c(0, 0),
-    labels = NULL,
-    breaks = NULL
+    breaks = NULL,
+    labels = NULL
   ) +
+  scale_x_discrete(expand = c(0, 0)) +
   labs(
     title = "All Days",
     x = NULL,
@@ -141,7 +159,8 @@ p <- ggplot(plot_df, aes(x = Group, y = SegmentHeight, fill = Gene)) +
     axis.text.x = element_text(face = "bold", size = 11, angle = 45, hjust = 1),
     axis.text.y = element_blank(),
     axis.ticks = element_blank(),
-    axis.line = element_blank()
+    axis.line = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
   )
 
 ggsave(output_png, p, width = 12, height = 8, dpi = 300)
