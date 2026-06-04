@@ -1,0 +1,88 @@
+# Install once if needed:
+# install.packages(c("eulerr", "gridExtra"))
+
+library(eulerr)
+library(grid)
+library(gridExtra)
+
+input_file <- "input.tsv"
+output_prefix <- "euler_10circle"
+
+dat <- read.delim(
+  input_file,
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+# First 10 rows under the header
+dat10 <- dat[1:10, , drop = FALSE]
+
+# Column 1 = group/circle names
+circle_labels <- as.character(dat10[[1]])
+
+# Column 9 = semicolon-delimited gene symbols
+gene_strings <- as.character(dat10[[9]])
+
+gene_sets <- lapply(gene_strings, function(x) {
+  genes <- unlist(strsplit(x, ";"))
+  genes <- trimws(genes)
+  genes <- genes[genes != "" & !is.na(genes)]
+  unique(genes)
+})
+
+names(gene_sets) <- circle_labels
+
+fit <- euler(gene_sets)
+
+gene_text <- paste(
+  names(gene_sets),
+  sapply(gene_sets, function(x) paste(x, collapse = ", ")),
+  sep = ": "
+)
+
+gene_panel <- textGrob(
+  paste(gene_text, collapse = "\n\n"),
+  x = 0,
+  y = 1,
+  just = c("left", "top"),
+  gp = gpar(fontsize = 7)
+)
+
+make_plot <- function() {
+  euler_plot <- plot(
+    fit,
+    fills = list(alpha = 0.45),
+    edges = TRUE,
+    labels = list(fontsize = 10),
+    quantities = TRUE,
+    main = "10-circle Euler Diagram"
+  )
+
+  grid.arrange(
+    euler_plot,
+    gene_panel,
+    ncol = 2,
+    widths = c(2.2, 1)
+  )
+}
+
+png(
+  filename = paste0(output_prefix, ".png"),
+  width = 2800,
+  height = 1800,
+  res = 200
+)
+make_plot()
+dev.off()
+
+pdf(
+  file = paste0(output_prefix, ".pdf"),
+  width = 14,
+  height = 9
+)
+make_plot()
+dev.off()
+
+message("Done: created ", output_prefix, ".png and ", output_prefix, ".pdf")
