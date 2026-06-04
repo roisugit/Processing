@@ -32,7 +32,7 @@ read_gene_sets <- function(file) {
 }
 
 make_presence_matrix <- function(gene_sets) {
-  all_genes <- sort(unique(unlist(gene_sets)))
+  all_genes <- unique(unlist(gene_sets))
 
   mat <- sapply(gene_sets, function(g) {
     as.integer(all_genes %in% g)
@@ -50,6 +50,24 @@ read_gene_colors <- function(file) {
   gene_colors <- as.character(dat[[2]])
   names(gene_colors) <- as.character(dat[[1]])
   gene_colors
+}
+
+cluster_order <- function(mat) {
+  if (nrow(mat) > 1) {
+    row_dist <- dist(mat, method = "binary")
+    row_order <- hclust(row_dist, method = "average")$order
+  } else {
+    row_order <- 1
+  }
+
+  if (ncol(mat) > 1) {
+    col_dist <- dist(t(mat), method = "binary")
+    col_order <- hclust(col_dist, method = "average")$order
+  } else {
+    col_order <- 1
+  }
+
+  mat[row_order, col_order, drop = FALSE]
 }
 
 make_colored_matrix <- function(mat, gene_colors) {
@@ -72,12 +90,11 @@ make_heatmap_grob <- function(input_file, gene_colors, title) {
   gene_sets <- read_gene_sets(input_file)
   mat <- make_presence_matrix(gene_sets)
 
-  row_order <- rownames(mat)
-  col_order <- colnames(mat)
+  # Cluster-like ordering, but no trees shown
+  mat <- cluster_order(mat)
 
   color_mat <- make_colored_matrix(mat, gene_colors)
 
-  # Convert unique colors to numeric values for pheatmap
   unique_colors <- unique(as.vector(color_mat))
   color_ids <- match(color_mat, unique_colors)
 
@@ -99,15 +116,24 @@ make_heatmap_grob <- function(input_file, gene_colors, title) {
     legend = FALSE,
     show_rownames = TRUE,
     show_colnames = TRUE,
-    labels_row = row_order,
-    labels_col = col_order,
-    fontsize_row = 7,
+    fontsize_row = 8,
     fontsize_col = 10,
     angle_col = 45,
     border_color = "grey80",
+    cellwidth = 18,
+    cellheight = 18,
     main = title,
     silent = TRUE
   )
+
+  # Make gene names and group names bold
+  for (i in seq_along(p$gtable$grobs)) {
+    grob_name <- p$gtable$layout$name[i]
+
+    if (grob_name %in% c("row_names", "col_names")) {
+      p$gtable$grobs[[i]]$gp <- gpar(fontface = "bold")
+    }
+  }
 
   p$gtable
 }
@@ -117,11 +143,11 @@ gene_colors <- read_gene_colors(gene_color_tsv)
 fig1 <- make_heatmap_grob(input_tsv_1, gene_colors, "D2-D0")
 fig2 <- make_heatmap_grob(input_tsv_2, gene_colors, "D7-D2")
 
-png(output_png, width = 3200, height = 1800, res = 200)
+png(output_png, width = 3400, height = 2200, res = 200)
 grid.arrange(fig1, fig2, ncol = 2)
 dev.off()
 
-pdf(output_pdf, width = 16, height = 9)
+pdf(output_pdf, width = 17, height = 11)
 grid.arrange(fig1, fig2, ncol = 2)
 dev.off()
 
