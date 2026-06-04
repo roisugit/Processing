@@ -1,16 +1,15 @@
 # Install once if needed:
-# install.packages(c("pheatmap", "gridExtra", "grid"))
+# install.packages(c("pheatmap", "grid"))
 
 library(pheatmap)
 library(grid)
-library(gridExtra)
 
 input_tsv_1 <- "D2_D0_input.tsv"
 input_tsv_2 <- "D7_D2_input.tsv"
 gene_color_tsv <- "gene_colors.tsv"
 
-output_png <- "clustergrams_side_by_side.png"
-output_pdf <- "clustergrams_side_by_side.pdf"
+output_png_1 <- "clustergram_D2_D0.png"
+output_png_2 <- "clustergram_D7_D2.png"
 
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
@@ -34,9 +33,7 @@ read_gene_sets <- function(file) {
 make_presence_matrix <- function(gene_sets) {
   all_genes <- unique(unlist(gene_sets))
 
-  mat <- sapply(gene_sets, function(g) {
-    as.integer(all_genes %in% g)
-  })
+  mat <- sapply(gene_sets, function(g) as.integer(all_genes %in% g))
 
   rownames(mat) <- all_genes
   colnames(mat) <- names(gene_sets)
@@ -52,46 +49,39 @@ read_gene_colors <- function(file) {
   gene_colors
 }
 
-cluster_order <- function(mat) {
+order_matrix <- function(mat) {
+  # Groups: most genes on the left, least on the right
+  col_order <- order(colSums(mat), decreasing = TRUE)
+  mat <- mat[, col_order, drop = FALSE]
+
+  # Genes: cluster-like order to keep shared patterns together
   if (nrow(mat) > 1) {
-    row_dist <- dist(mat, method = "binary")
-    row_order <- hclust(row_dist, method = "average")$order
-  } else {
-    row_order <- 1
+    row_order <- hclust(dist(mat, method = "binary"), method = "average")$order
+    mat <- mat[row_order, , drop = FALSE]
   }
 
-  if (ncol(mat) > 1) {
-    col_dist <- dist(t(mat), method = "binary")
-    col_order <- hclust(col_dist, method = "average")$order
-  } else {
-    col_order <- 1
-  }
-
-  mat[row_order, col_order, drop = FALSE]
+  mat
 }
 
 make_colored_matrix <- function(mat, gene_colors) {
-  color_mat <- matrix("#FFFFFF", nrow = nrow(mat), ncol = ncol(mat))
-  rownames(color_mat) <- rownames(mat)
-  colnames(color_mat) <- colnames(mat)
+  color_mat <- matrix("#FFFFFF", nrow = nrow(mat), ncol = ncol(mat),
+                      dimnames = dimnames(mat))
 
   for (gene in rownames(mat)) {
-    if (gene %in% names(gene_colors)) {
-      color_mat[gene, mat[gene, ] == 1] <- gene_colors[gene]
-    } else {
-      color_mat[gene, mat[gene, ] == 1] <- "#000000"
-    }
+    fill_color <- ifelse(gene %in% names(gene_colors),
+                         gene_colors[gene],
+                         "#000000")
+
+    color_mat[gene, mat[gene, ] == 1] <- fill_color
   }
 
   color_mat
 }
 
-make_heatmap_grob <- function(input_file, gene_colors, title) {
+make_clustergram <- function(input_file, gene_colors, title, output_png) {
   gene_sets <- read_gene_sets(input_file)
   mat <- make_presence_matrix(gene_sets)
-
-  # Cluster-like ordering, but no trees shown
-  mat <- cluster_order(mat)
+  mat <- order_matrix(mat)
 
   color_mat <- make_colored_matrix(mat, gene_colors)
 
@@ -126,29 +116,21 @@ make_heatmap_grob <- function(input_file, gene_colors, title) {
     silent = TRUE
   )
 
-  # Make gene names and group names bold
   for (i in seq_along(p$gtable$grobs)) {
-    grob_name <- p$gtable$layout$name[i]
-
-    if (grob_name %in% c("row_names", "col_names")) {
+    if (p$gtable$layout$name[i] %in% c("row_names", "col_names")) {
       p$gtable$grobs[[i]]$gp <- gpar(fontface = "bold")
     }
   }
 
-  p$gtable
+  png(output_png, width = 1800, height = max(1200, 40 * nrow(mat)), res = 200)
+  grid.newpage()
+  grid.draw(p$gtable)
+  dev.off()
 }
 
 gene_colors <- read_gene_colors(gene_color_tsv)
 
-fig1 <- make_heatmap_grob(input_tsv_1, gene_colors, "D2-D0")
-fig2 <- make_heatmap_grob(input_tsv_2, gene_colors, "D7-D2")
+make_clustergram(input_tsv_1, gene_colors, "D2-D0", output_png_1)
+make_clustergram(input_tsv_2, gene_colors, "D7-D2", output_png_2)
 
-png(output_png, width = 3400, height = 2200, res = 200)
-grid.arrange(fig1, fig2, ncol = 2)
-dev.off()
-
-pdf(output_pdf, width = 17, height = 11)
-grid.arrange(fig1, fig2, ncol = 2)
-dev.off()
-
-message("Done: created ", output_png, " and ", output_pdf)
+message("Done: created ", output_png_1, " and ", output_png_2)
