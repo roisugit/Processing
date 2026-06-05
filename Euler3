@@ -15,7 +15,7 @@ color_order <- c(
   "#666666", "#777777", "#888888", "#999999", "#AAAAAA", "#BBBBBB"
 )
 
-max_boxes_per_row <- 10
+max_boxes_per_row <- 15
 box_width <- 1.35
 box_height <- 1.25
 group_gap <- 0.18
@@ -79,7 +79,7 @@ combine_gene_sets <- function(gs1, gs2) {
   combined
 }
 
-make_plot_data <- function(gene_sets, gene_colors, color_order, max_boxes_per_row = 10) {
+make_plot_data <- function(gene_sets, gene_colors, color_order, max_boxes_per_row = 15) {
   color_order <- toupper(color_order)
 
   df <- bind_rows(lapply(names(gene_sets), function(group) {
@@ -208,7 +208,7 @@ make_line_plot_data <- function(plot_df, gene_line_df) {
     x_pos <- row$xmin + 0.15 * (row$xmax - row$xmin) +
       (t_pos / 7) * 0.70 * (row$xmax - row$xmin)
 
-    y_pos <- row$box_ymin + 0.12 * (row$box_ymax - row$box_ymin)
+    y_pos <- row$box_ymin + 0.22 * (row$box_ymax - row$box_ymin)
 
     data.frame(
       Gene = row$Gene,
@@ -323,7 +323,7 @@ p <- ggplot(plot_df) +
     axis.line = element_blank()
   )
 
-ggsave(output_png, p, width = 14, height = 10, dpi = 300)
-ggsave(output_pdf, p, width = 14, height = 10)
+ggsave(output_png, p, width = 18, height = 10, dpi = 300)
+ggsave(output_pdf, p, width = 18, height = 10)
 
 message("Done: created ", output_png, " and ", output_pdf)
