@@ -5,9 +5,6 @@ input_tsv_1 <- "D2_D0_input.tsv"
 input_tsv_2 <- "D7_D2_input.tsv"
 input_tsv_3 <- "D7_D0_input.tsv"
 gene_color_tsv <- "gene_colors.tsv"
-
-# New input file:
-# col1 = Gene, col2 = D0, col3 = D2, col4 = D7, col5 = significance comparison
 gene_line_tsv <- "gene_line_values.tsv"
 
 output_png <- "gene_boxes_All_Days.png"
@@ -22,7 +19,7 @@ read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
                     stringsAsFactors = FALSE, check.names = FALSE)
 
-  dat10 <- dat[1:10, , drop = FALSE]
+  dat10 <- dat[1:min(10, nrow(dat)), , drop = FALSE]
 
   group_names <- as.character(dat10[[1]])
   gene_strings <- as.character(dat10[[9]])
@@ -137,7 +134,10 @@ make_line_plot_data <- function(plot_df, gene_line_df) {
     row <- merged[i, ]
 
     vals <- c(row$D0, row$D2, row$D7)
-    if (any(is.na(vals))) return(NULL)
+
+    if (any(is.na(vals))) {
+      return(NULL)
+    }
 
     vmin <- min(vals)
     vmax <- max(vals)
@@ -145,8 +145,10 @@ make_line_plot_data <- function(plot_df, gene_line_df) {
     if (vmin == vmax) {
       scaled_y <- rep((row$box_ymin + row$box_ymax) / 2, 3)
     } else {
-      scaled_y <- row$box_ymin + 0.18 * (row$box_ymax - row$box_ymin) +
-        ((vals - vmin) / (vmax - vmin)) * 0.64 * (row$box_ymax - row$box_ymin)
+      scaled_y <- row$box_ymin +
+        0.18 * (row$box_ymax - row$box_ymin) +
+        ((vals - vmin) / (vmax - vmin)) *
+        0.64 * (row$box_ymax - row$box_ymin)
     }
 
     data.frame(
@@ -157,6 +159,8 @@ make_line_plot_data <- function(plot_df, gene_line_df) {
       Value = vals,
       x = row$xmin + c(0.22, 0.50, 0.78) * (row$xmax - row$xmin),
       y = scaled_y,
+      box_ymin = row$box_ymin,
+      box_ymax = row$box_ymax,
       LineID = paste(row$Group, row$Gene, sep = "___"),
       stringsAsFactors = FALSE
     )
@@ -200,14 +204,12 @@ fill_values <- plot_df %>%
 
 p <- ggplot(plot_df) +
 
-  # Colored gene box
   geom_rect(
     aes(xmin = xmin, xmax = xmax, ymin = box_ymin, ymax = box_ymax, fill = Gene),
     color = "white",
     linewidth = 0.25
   ) +
 
-  # White gene-name box directly above
   geom_rect(
     aes(xmin = xmin, xmax = xmax, ymin = label_ymin, ymax = label_ymax),
     fill = "white",
@@ -222,30 +224,34 @@ p <- ggplot(plot_df) +
     size = 2.2
   ) +
 
-  # Line graph inside each colored box
   geom_line(
     data = line_data$line_df,
     aes(x = x, y = y, group = LineID),
     color = "black",
-    linewidth = 0.35
+    linewidth = 0.35,
+    inherit.aes = FALSE
   ) +
 
   geom_point(
     data = line_data$line_df,
     aes(x = x, y = y),
     color = "black",
-    size = 0.8
+    size = 0.8,
+    inherit.aes = FALSE
   ) +
 
-  # D0/D2/D7 labels inside each box
   geom_text(
     data = line_data$line_df,
-    aes(x = x, y = box_ymin + 0.06 * (box_ymax - box_ymin), label = Time),
+    aes(
+      x = x,
+      y = box_ymin + 0.06 * (box_ymax - box_ymin),
+      label = Time
+    ),
     color = "black",
-    size = 1.5
+    size = 1.5,
+    inherit.aes = FALSE
   ) +
 
-  # Significance asterisk
   geom_label(
     data = line_data$sig_df,
     aes(x = sig_x, y = sig_y, label = "*"),
@@ -254,7 +260,8 @@ p <- ggplot(plot_df) +
     fontface = "bold",
     size = 2.2,
     label.size = 0.1,
-    label.padding = unit(0.02, "lines")
+    label.padding = unit(0.02, "lines"),
+    inherit.aes = FALSE
   ) +
 
   scale_fill_manual(values = fill_values) +
