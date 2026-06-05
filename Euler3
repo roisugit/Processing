@@ -16,10 +16,11 @@ color_order <- c(
 )
 
 cell_width <- 1.35
-cell_height <- 1.1
+cell_height_min <- 1.1
 header_height <- 1.25
 group_gap <- 0.08
-max_genes_per_line <- 4
+gene_line_height <- 0.18
+gene_cell_padding <- 0.35
 
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
@@ -79,12 +80,10 @@ combine_gene_sets <- function(gs1, gs2) {
   combined
 }
 
-wrap_genes <- function(genes, max_genes_per_line = 4) {
+wrap_genes <- function(genes) {
   genes <- genes[!is.na(genes) & genes != ""]
   if (length(genes) == 0) return("")
-
-  chunks <- split(genes, ceiling(seq_along(genes) / max_genes_per_line))
-  paste(vapply(chunks, paste, collapse = ", ", FUN.VALUE = character(1)), collapse = "\n")
+  paste(sort(unique(genes)), collapse = "\n")
 }
 
 make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
@@ -125,7 +124,7 @@ make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
     group_by(Group, ColorRank) %>%
     summarise(
       Genes = list(sort(unique(Gene))),
-      GeneLabel = wrap_genes(sort(unique(Gene)), max_genes_per_line),
+      GeneLabel = wrap_genes(sort(unique(Gene))),
       GeneCount = length(unique(Gene)),
       Color = color_order[unique(ColorRank)[1]],
       .groups = "drop"
@@ -140,17 +139,31 @@ make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
       GroupIndex = as.numeric(Group),
       xmin = (ColorRank - 1) * cell_width,
       xmax = ColorRank * cell_width,
-      ymin = header_height + (GroupIndex - 1) * (cell_height + group_gap),
-      ymax = ymin + cell_height,
-      xmid = (xmin + xmax) / 2,
+      xmid = (xmin + xmax) / 2
+    )
+
+  row_heights <- cell_df %>%
+    group_by(Group) %>%
+    summarise(
+      RowHeight = max(cell_height_min, max(GeneCount, na.rm = TRUE) * gene_line_height + gene_cell_padding),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      GroupIndex = as.numeric(Group),
+      GroupStartY = header_height + lag(cumsum(RowHeight + group_gap), default = 0),
+      GroupY = GroupStartY + RowHeight / 2
+    )
+
+  cell_df <- cell_df %>%
+    left_join(row_heights, by = c("Group", "GroupIndex")) %>%
+    mutate(
+      ymin = GroupStartY,
+      ymax = GroupStartY + RowHeight,
       ymid = (ymin + ymax) / 2
     )
 
-  group_axis <- cell_df %>%
-    distinct(Group, GroupIndex) %>%
-    mutate(
-      GroupY = header_height + (GroupIndex - 1) * (cell_height + group_gap) + cell_height / 2
-    )
+  group_axis <- row_heights %>%
+    distinct(Group, GroupY)
 
   list(cell_df = cell_df, gene_df = df, group_axis = group_axis)
 }
@@ -219,7 +232,45 @@ make_header_data <- function(gene_df, gene_line_df, color_order) {
     )
   }))
 
-  list(header_boxes = header_boxes, header_lines = header_lines)
+  header_sig <- bind_rows(lapply(seq_len(nrow(header_boxes)), function(i) {
+    box <- header_boxes[i, ]
+
+    sig_row <- line_joined %>%
+      filter(ColorRank == box$ColorRank, !is.na(Significance), Significance != "") %>%
+      count(Significance, sort = TRUE) %>%
+      slice(1)
+
+    if (nrow(sig_row) == 0) return(NULL)
+
+    sig <- sig_row$Significance[1]
+
+    if (sig == "D7_D0") {
+      t_pos <- 2
+    } else {
+      pair <- strsplit(sig, "_")[[1]]
+      times <- c(D0 = 0, D2 = 2, D7 = 7)
+      if (length(pair) != 2 || !all(pair %in% names(times))) return(NULL)
+      t_pos <- mean(times[pair])
+    }
+
+    x_pos <- box$xmin + 0.15 * (box$xmax - box$xmin) +
+      (t_pos / 7) * 0.70 * (box$xmax - box$xmin)
+
+    y_pos <- box$ymin + 0.30 * (box$ymax - box$ymin)
+
+    data.frame(
+      ColorRank = box$ColorRank,
+      sig_x = x_pos,
+      sig_y = y_pos,
+      stringsAsFactors = FALSE
+    )
+  }))
+
+  list(
+    header_boxes = header_boxes,
+    header_lines = header_lines,
+    header_sig = header_sig
+  )
 }
 
 gene_sets_1 <- read_gene_sets(input_tsv_1)
@@ -242,6 +293,7 @@ group_axis <- table_data$group_axis
 header_data <- make_header_data(gene_df, gene_lines, color_order)
 header_boxes <- header_data$header_boxes
 header_lines <- header_data$header_lines
+header_sig <- header_data$header_sig
 
 p <- ggplot() +
 
@@ -261,11 +313,12 @@ p <- ggplot() +
   ) +
 
   geom_text(
-    data = header_boxes,
-    aes(x = xmid, y = ymin + 0.12 * (ymax - ymin), label = paste0("Color ", ColorRank)),
-    color = "white",
+    data = header_sig,
+    aes(x = sig_x, y = sig_y, label = "*"),
+    color = "black",
     fontface = "bold",
-    size = 3
+    size = 4,
+    inherit.aes = FALSE
   ) +
 
   geom_rect(
@@ -280,7 +333,7 @@ p <- ggplot() +
     data = cell_df,
     aes(x = xmid, y = ymid, label = GeneLabel),
     color = "black",
-    size = 2.2,
+    size = 2.1,
     lineheight = 0.9
   ) +
 
@@ -297,8 +350,6 @@ p <- ggplot() +
     labels = as.character(group_axis$Group),
     expand = c(0.005, 0.005)
   ) +
-
-  coord_fixed(ratio = 1) +
 
   labs(
     title = "All Days",
@@ -320,7 +371,7 @@ p <- ggplot() +
     axis.line = element_blank()
   )
 
-ggsave(output_png, p, width = 16, height = 10, dpi = 300)
-ggsave(output_pdf, p, width = 16, height = 10)
+ggsave(output_png, p, width = 16, height = 12, dpi = 300)
+ggsave(output_pdf, p, width = 16, height = 12)
 
 message("Done: created ", output_png, " and ", output_pdf)
