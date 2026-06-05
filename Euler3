@@ -33,7 +33,6 @@ read_gene_sets <- function(file) {
                     stringsAsFactors = FALSE, check.names = FALSE)
 
   dat10 <- dat[1:min(10, nrow(dat)), , drop = FALSE]
-
   group_names <- as.character(dat10[[1]])
   gene_strings <- as.character(dat10[[9]])
 
@@ -303,12 +302,12 @@ make_header_data <- function(gene_df, gene_line_df, color_lookup, column_widths)
     vmax <- max(vals)
 
     if (vmin == vmax) {
-      y <- rep((box$ymin + box$ymax) / 2, 3)
+      y <- rep(box$ymin + 0.62 * (box$ymax - box$ymin), 3)
     } else {
       y <- box$ymax -
-        0.20 * (box$ymax - box$ymin) -
+        0.38 * (box$ymax - box$ymin) -
         ((vals - vmin) / (vmax - vmin)) *
-        0.60 * (box$ymax - box$ymin)
+        0.42 * (box$ymax - box$ymin)
     }
 
     data.frame(
@@ -356,8 +355,8 @@ make_header_data <- function(gene_df, gene_line_df, color_lookup, column_widths)
         mean(c(x1, x2))
       }
 
-      bar_y <- box$ymin + (0.18 + (j - 1) * 0.16) * (box$ymax - box$ymin)
-      star_y <- box$ymin + (0.30 + (j - 1) * 0.16) * (box$ymax - box$ymin)
+      bar_y <- box$ymin + (0.11 + (j - 1) * 0.13) * (box$ymax - box$ymin)
+      star_y <- box$ymin + (0.08 + (j - 1) * 0.13) * (box$ymax - box$ymin)
 
       data.frame(
         ColorRank = box$ColorRank,
