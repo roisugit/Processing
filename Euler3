@@ -26,7 +26,7 @@ gene_column_width <- 0.55
 cell_height <- 1.00
 header_height <- 1.00
 group_gap <- 0.08
-gene_text_size <- 1.65
+gene_text_size <- 2.65
 
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
@@ -335,26 +335,37 @@ make_header_data <- function(gene_df, gene_line_df, color_lookup, column_widths)
     bind_rows(lapply(seq_len(nrow(sig_rows)), function(j) {
       sig <- sig_rows$Significance[j]
 
-      if (sig == "D7_D0") {
-        t_pos <- 2
+      pair <- strsplit(sig, "_")[[1]]
+      times_named <- c(D0 = 0, D2 = 2, D7 = 7)
+
+      if (length(pair) != 2 || !all(pair %in% names(times_named))) return(NULL)
+
+      t1 <- times_named[pair[1]]
+      t2 <- times_named[pair[2]]
+
+      x1 <- box$xmin + 0.15 * (box$xmax - box$xmin) +
+        (t1 / 7) * 0.70 * (box$xmax - box$xmin)
+
+      x2 <- box$xmin + 0.15 * (box$xmax - box$xmin) +
+        (t2 / 7) * 0.70 * (box$xmax - box$xmin)
+
+      x_mid <- if (sig == "D7_D0") {
+        box$xmin + 0.15 * (box$xmax - box$xmin) +
+          (2 / 7) * 0.70 * (box$xmax - box$xmin)
       } else {
-        pair <- strsplit(sig, "_")[[1]]
-        times_named <- c(D0 = 0, D2 = 2, D7 = 7)
-
-        if (length(pair) != 2 || !all(pair %in% names(times_named))) return(NULL)
-
-        t_pos <- mean(times_named[pair])
+        mean(c(x1, x2))
       }
 
-      x_pos <- box$xmin + 0.15 * (box$xmax - box$xmin) +
-        (t_pos / 7) * 0.70 * (box$xmax - box$xmin)
-
-      y_pos <- box$ymin + 0.16 * (box$ymax - box$ymin)
+      bar_y <- box$ymin + (0.18 + (j - 1) * 0.16) * (box$ymax - box$ymin)
+      star_y <- box$ymin + (0.30 + (j - 1) * 0.16) * (box$ymax - box$ymin)
 
       data.frame(
         ColorRank = box$ColorRank,
-        sig_x = x_pos,
-        sig_y = y_pos,
+        sig_x = x_mid,
+        sig_y = star_y,
+        bar_xmin = min(x1, x2),
+        bar_xmax = max(x1, x2),
+        bar_y = bar_y,
         label = "*",
         stringsAsFactors = FALSE
       )
@@ -424,6 +435,14 @@ p <- ggplot() +
     aes(x = x, y = y, group = LineID),
     color = "white",
     linewidth = 0.8,
+    inherit.aes = FALSE
+  ) +
+
+  geom_segment(
+    data = header_sig,
+    aes(x = bar_xmin, xend = bar_xmax, y = bar_y, yend = bar_y),
+    color = "black",
+    linewidth = 0.35,
     inherit.aes = FALSE
   ) +
 
