@@ -1,74 +1,3 @@
-make_plot_data <- function(gene_sets, gene_colors, color_order, max_boxes_per_row = 10) {
-  color_order <- toupper(color_order)
-
-  df <- bind_rows(lapply(names(gene_sets), function(group) {
-    data.frame(
-      Group = group,
-      Gene = gene_sets[[group]],
-      stringsAsFactors = FALSE
-    )
-  }))
-
-  df$Color <- gene_colors[df$Gene]
-  df$Color[is.na(df$Color)] <- "#999999"
-
-  df$ColorRank <- match(toupper(df$Color), color_order)
-  df$ColorRank[is.na(df$ColorRank)] <- length(color_order) + 1
-
-  df <- df %>%
-    group_by(Group) %>%
-    mutate(GeneCount = n()) %>%
-    arrange(ColorRank, Gene, .by_group = TRUE) %>%
-    mutate(
-      BoxNumber = row_number(),
-      WrapCol = ((BoxNumber - 1) %% max_boxes_per_row) + 1,
-      WrapRow = floor((BoxNumber - 1) / max_boxes_per_row) + 1
-    ) %>%
-    ungroup()
-
-  group_order <- df %>%
-    distinct(Group, GeneCount) %>%
-    arrange(desc(GeneCount)) %>%
-    pull(Group)
-
-  df <- df %>%
-    mutate(Group = factor(Group, levels = group_order))
-
-  group_layout <- df %>%
-    group_by(Group) %>%
-    summarise(
-      NumWrapRows = max(WrapRow),
-      .groups = "drop"
-    ) %>%
-    arrange(Group) %>%
-    mutate(
-      GroupStartY = lag(cumsum(NumWrapRows + 0.6), default = 0),
-      GroupY = GroupStartY + NumWrapRows / 2
-    )
-
-  label_height <- 0.24
-
-  df <- df %>%
-    left_join(group_layout, by = "Group") %>%
-    mutate(
-      xmin = WrapCol - 1,
-      xmax = WrapCol,
-
-      ymin = GroupStartY + WrapRow - 1,
-      ymax = GroupStartY + WrapRow,
-
-      box_ymin = ymin,
-      box_ymax = ymax - label_height,
-
-      label_ymin = ymax - label_height,
-      label_ymax = ymax,
-      label_ymid = (label_ymin + label_ymax) / 2
-    )
-
-  df
-}
-
-
 library(ggplot2)
 library(dplyr)
 
@@ -87,6 +16,10 @@ color_order <- c(
 )
 
 max_boxes_per_row <- 10
+box_width <- 1.35
+box_height <- 1.25
+group_gap <- 0.18
+label_height <- 0.26
 
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
@@ -157,21 +90,21 @@ make_plot_data <- function(gene_sets, gene_colors, color_order, max_boxes_per_ro
     )
   }))
 
-  df$Color <- gene_colors[df$Gene]
+  df$Color <- toupper(gene_colors[df$Gene])
   df$Color[is.na(df$Color)] <- "#999999"
 
-  df$ColorRank <- match(toupper(df$Color), color_order)
+  df$ColorRank <- match(df$Color, color_order)
   df$ColorRank[is.na(df$ColorRank)] <- length(color_order) + 1
 
   df <- df %>%
     group_by(Group) %>%
     mutate(GeneCount = n()) %>%
     arrange(ColorRank, Gene, .by_group = TRUE) %>%
+    mutate(BoxNumber = row_number()) %>%
+    arrange(Group, BoxNumber) %>%
     mutate(
-      BoxNumber = row_number(),
-      WrapCol = ((BoxNumber - 1) %% max_boxes_per_row) + 1,
       WrapRow = floor((BoxNumber - 1) / max_boxes_per_row) + 1,
-      NumWrapRows = ceiling(GeneCount / max_boxes_per_row)
+      WrapCol = ((BoxNumber - 1) %% max_boxes_per_row) + 1
     ) %>%
     ungroup()
 
@@ -180,35 +113,36 @@ make_plot_data <- function(gene_sets, gene_colors, color_order, max_boxes_per_ro
     arrange(desc(GeneCount)) %>%
     pull(Group)
 
+  df <- df %>%
+    mutate(Group = factor(Group, levels = group_order))
+
   group_layout <- df %>%
-    distinct(Group, NumWrapRows) %>%
-    mutate(Group = factor(Group, levels = group_order)) %>%
+    group_by(Group) %>%
+    summarise(
+      NumWrapRows = max(WrapRow),
+      .groups = "drop"
+    ) %>%
     arrange(Group) %>%
     mutate(
-      GroupIndex = row_number(),
-      GroupStartY = lag(cumsum(NumWrapRows + 0.6), default = 0)
+      GroupStartY = lag(cumsum(NumWrapRows * box_height + group_gap), default = 0),
+      GroupY = GroupStartY + NumWrapRows * box_height / 2
     )
 
-  label_height <- 0.24
-
   df <- df %>%
-    mutate(Group = factor(Group, levels = group_order)) %>%
     left_join(group_layout, by = "Group") %>%
     mutate(
-      xmin = WrapCol - 1,
-      xmax = WrapCol,
+      xmin = (WrapCol - 1) * box_width,
+      xmax = WrapCol * box_width,
 
-      ymin = GroupStartY + WrapRow - 1,
-      ymax = GroupStartY + WrapRow,
+      ymin = GroupStartY + (WrapRow - 1) * box_height,
+      ymax = GroupStartY + WrapRow * box_height,
 
       box_ymin = ymin,
       box_ymax = ymax - label_height,
 
       label_ymin = ymax - label_height,
       label_ymax = ymax,
-      label_ymid = (label_ymin + label_ymax) / 2,
-
-      GroupY = GroupStartY + NumWrapRows / 2
+      label_ymid = (label_ymin + label_ymax) / 2
     )
 
   df
@@ -232,8 +166,8 @@ make_line_plot_data <- function(plot_df, gene_line_df) {
     if (vmin == vmax) {
       scaled_y <- rep((row$box_ymin + row$box_ymax) / 2, 3)
     } else {
-      scaled_y <- row$box_ymin +
-        0.18 * (row$box_ymax - row$box_ymin) +
+      scaled_y <- row$box_ymax -
+        0.18 * (row$box_ymax - row$box_ymin) -
         ((vals - vmin) / (vmax - vmin)) *
         0.64 * (row$box_ymax - row$box_ymin)
     }
@@ -261,32 +195,26 @@ make_line_plot_data <- function(plot_df, gene_line_df) {
     if (any(is.na(vals))) return(NULL)
     if (is.na(row$Significance) || row$Significance == "") return(NULL)
 
-    pair <- strsplit(row$Significance, "_")[[1]]
-    if (length(pair) != 2 || !all(pair %in% names(vals))) return(NULL)
+    sig <- row$Significance
 
-    t_mid <- mean(times[pair])
-    v_mid <- mean(vals[pair])
-
-    vmin <- min(vals)
-    vmax <- max(vals)
-
-    if (vmin == vmax) {
-      y_mid <- (row$box_ymin + row$box_ymax) / 2
+    if (sig == "D7_D0") {
+      t_pos <- 2
     } else {
-      y_mid <- row$box_ymin +
-        0.18 * (row$box_ymax - row$box_ymin) +
-        ((v_mid - vmin) / (vmax - vmin)) *
-        0.64 * (row$box_ymax - row$box_ymin)
+      pair <- strsplit(sig, "_")[[1]]
+      if (length(pair) != 2 || !all(pair %in% names(times))) return(NULL)
+      t_pos <- mean(times[pair])
     }
 
-    x_mid <- row$xmin + 0.15 * (row$xmax - row$xmin) +
-      (t_mid / 7) * 0.70 * (row$xmax - row$xmin)
+    x_pos <- row$xmin + 0.15 * (row$xmax - row$xmin) +
+      (t_pos / 7) * 0.70 * (row$xmax - row$xmin)
+
+    y_pos <- row$box_ymin + 0.12 * (row$box_ymax - row$box_ymin)
 
     data.frame(
       Gene = row$Gene,
       Group = row$Group,
-      sig_x = x_mid,
-      sig_y = y_mid,
+      sig_x = x_pos,
+      sig_y = y_pos,
       stringsAsFactors = FALSE
     )
   }))
@@ -316,6 +244,7 @@ plot_df <- make_plot_data(
 line_data <- make_line_plot_data(plot_df, gene_lines)
 
 fill_values <- plot_df %>%
+  arrange(ColorRank, Gene) %>%
   distinct(Gene, Color) %>%
   tibble::deframe()
 
@@ -349,23 +278,23 @@ p <- ggplot(plot_df) +
     data = line_data$line_df,
     aes(x = x, y = y, group = LineID),
     color = "white",
-    linewidth = 0.45,
+    linewidth = 0.55,
     inherit.aes = FALSE
   ) +
 
   geom_text(
     data = line_data$sig_df,
     aes(x = sig_x, y = sig_y, label = "*"),
-    color = "white",
+    color = "black",
     fontface = "bold",
-    size = 3,
+    size = 3.6,
     inherit.aes = FALSE
   ) +
 
   scale_fill_manual(values = fill_values) +
 
   scale_x_continuous(
-    limits = c(0, max_boxes_per_row),
+    limits = c(0, max_boxes_per_row * box_width),
     expand = c(0, 0),
     breaks = NULL
   ) +
@@ -373,7 +302,7 @@ p <- ggplot(plot_df) +
   scale_y_reverse(
     breaks = group_axis$GroupY,
     labels = as.character(group_axis$Group),
-    expand = c(0.01, 0.01)
+    expand = c(0.005, 0.005)
   ) +
 
   coord_fixed(ratio = 1) +
@@ -394,7 +323,7 @@ p <- ggplot(plot_df) +
     axis.line = element_blank()
   )
 
-ggsave(output_png, p, width = 12, height = 10, dpi = 300)
-ggsave(output_pdf, p, width = 12, height = 10)
+ggsave(output_png, p, width = 14, height = 10, dpi = 300)
+ggsave(output_pdf, p, width = 14, height = 10)
 
 message("Done: created ", output_png, " and ", output_pdf)
