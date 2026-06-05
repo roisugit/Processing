@@ -15,9 +15,6 @@ color_order <- c(
   "#666666", "#777777", "#888888", "#999999", "#AAAAAA", "#BBBBBB"
 )
 
-# Optional renaming / synonym expansion.
-# Original gene name = one or more display names.
-# Separate multiple names with ";".
 gene_name_substitutions <- c(
   "GeneA" = "A1;A2",
   "GeneB" = "GeneC"
@@ -25,11 +22,11 @@ gene_name_substitutions <- c(
 
 max_genes_per_column <- 6
 cell_width_min <- 1.00
-gene_column_width <- 1.00
+gene_column_width <- 0.55
 cell_height <- 1.00
 header_height <- 1.00
 group_gap <- 0.08
-gene_text_size <- 1.75
+gene_text_size <- 1.65
 
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
@@ -223,13 +220,15 @@ make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
     n_cols <- length(chunks)
 
     bind_rows(lapply(seq_along(chunks), function(j) {
-      col_width <- (cell$xmax - cell$xmin) / n_cols
+      col_width <- min(gene_column_width, (cell$xmax - cell$xmin) / n_cols)
+      total_text_width <- col_width * n_cols
+      start_x <- cell$xmid - total_text_width / 2
 
       data.frame(
         Group = cell$Group,
         ColorRank = cell$ColorRank,
         label = paste(chunks[[j]], collapse = "\n"),
-        x = cell$xmin + (j - 0.5) * col_width,
+        x = start_x + (j - 0.5) * col_width,
         y = cell$ymid,
         stringsAsFactors = FALSE
       )
@@ -268,7 +267,7 @@ make_header_data <- function(gene_df, gene_line_df, color_lookup, column_widths)
       D7 = ifelse(!is.na(D7_display), D7_display, D7),
       Significance = ifelse(!is.na(Significance_display), Significance_display, Significance)
     ) %>%
-    select(Group, OriginalGene, DisplayGene, ColorRank, D0, D2, D7, Significance) %>%
+    dplyr::select(Group, OriginalGene, DisplayGene, ColorRank, D0, D2, D7, Significance) %>%
     filter(!is.na(D0), !is.na(D2), !is.na(D7))
 
   header_summary <- line_joined %>%
@@ -350,7 +349,7 @@ make_header_data <- function(gene_df, gene_line_df, color_lookup, column_widths)
       x_pos <- box$xmin + 0.15 * (box$xmax - box$xmin) +
         (t_pos / 7) * 0.70 * (box$xmax - box$xmin)
 
-      y_pos <- box$ymin + (0.24 + (j - 1) * 0.13) * (box$ymax - box$ymin)
+      y_pos <- box$ymin + 0.16 * (box$ymax - box$ymin)
 
       data.frame(
         ColorRank = box$ColorRank,
