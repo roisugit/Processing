@@ -1,3 +1,16 @@
+n_cols <- ceiling(length(genes) / max_genes_per_column)
+
+base_n <- floor(length(genes) / n_cols)
+extra <- length(genes) %% n_cols
+
+col_sizes <- rep(base_n, n_cols)
+if (extra > 0) {
+  col_sizes[seq_len(extra)] <- col_sizes[seq_len(extra)] + 1
+}
+
+chunks <- split(genes, rep(seq_len(n_cols), times = col_sizes))
+
+
 library(ggplot2)
 library(dplyr)
 
