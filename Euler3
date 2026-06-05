@@ -15,19 +15,27 @@ color_order <- c(
   "#666666", "#777777", "#888888", "#999999", "#AAAAAA", "#BBBBBB"
 )
 
-cell_width <- 1.35
-cell_height_min <- 1.1
-header_height <- 1.25
+# Optional gene display-name substitutions.
+# Names are original gene names. Values are what should be shown in the plot.
+# Use "\n" if you want multiple synonyms on separate lines.
+gene_name_substitutions <- c(
+  "GeneA" = "A1\nA2",
+  "GeneB" = "GeneC"
+)
+
+cell_width <- 1.00
+cell_height_min <- 1.00
+header_height <- 1.00
 group_gap <- 0.08
-gene_line_height <- 0.18
-gene_cell_padding <- 0.35
+gene_line_height <- 0.20
+gene_cell_padding <- 0.45
+gene_text_size <- 2.0
 
 read_gene_sets <- function(file) {
   dat <- read.delim(file, header = TRUE, sep = "\t",
                     stringsAsFactors = FALSE, check.names = FALSE)
 
   dat10 <- dat[1:min(10, nrow(dat)), , drop = FALSE]
-
   group_names <- as.character(dat10[[1]])
   gene_strings <- as.character(dat10[[9]])
 
@@ -80,31 +88,49 @@ combine_gene_sets <- function(gs1, gs2) {
   combined
 }
 
+display_gene_name <- function(gene) {
+  if (gene %in% names(gene_name_substitutions)) {
+    gene_name_substitutions[[gene]]
+  } else {
+    gene
+  }
+}
+
 wrap_genes <- function(genes) {
   genes <- genes[!is.na(genes) & genes != ""]
   if (length(genes) == 0) return("")
-  paste(sort(unique(genes)), collapse = "\n")
+  shown <- vapply(sort(unique(genes)), display_gene_name, FUN.VALUE = character(1))
+  paste(shown, collapse = "\n")
+}
+
+count_display_lines <- function(label) {
+  if (is.na(label) || label == "") return(0)
+  length(unlist(strsplit(label, "\n")))
 }
 
 make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
   color_order <- toupper(color_order)
 
   df <- bind_rows(lapply(names(gene_sets), function(group) {
-    data.frame(
-      Group = group,
-      Gene = gene_sets[[group]],
-      stringsAsFactors = FALSE
-    )
+    data.frame(Group = group, Gene = gene_sets[[group]], stringsAsFactors = FALSE)
   }))
 
   df$Color <- toupper(gene_colors[df$Gene])
   df$Color[is.na(df$Color)] <- "#999999"
 
-  df$ColorRank <- match(df$Color, color_order)
-  df$ColorRank[is.na(df$ColorRank)] <- length(color_order) + 1
+  df$ColorRankOriginal <- match(df$Color, color_order)
+  df <- df %>% filter(!is.na(ColorRankOriginal))
+
+  used_colors <- sort(unique(df$ColorRankOriginal))
+  color_lookup <- data.frame(
+    ColorRankOriginal = used_colors,
+    ColorRank = seq_along(used_colors),
+    Color = color_order[used_colors],
+    stringsAsFactors = FALSE
+  )
 
   df <- df %>%
-    filter(ColorRank <= length(color_order))
+    left_join(color_lookup, by = "ColorRankOriginal")
 
   group_order <- df %>%
     count(Group, name = "GeneCount") %>%
@@ -117,16 +143,16 @@ make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
 
   all_cells <- expand.grid(
     Group = factor(group_order, levels = group_order),
-    ColorRank = seq_along(color_order)
+    ColorRank = seq_along(used_colors)
   )
 
   cell_df <- df %>%
     group_by(Group, ColorRank) %>%
     summarise(
-      Genes = list(sort(unique(Gene))),
       GeneLabel = wrap_genes(sort(unique(Gene))),
       GeneCount = length(unique(Gene)),
-      Color = color_order[unique(ColorRank)[1]],
+      Color = unique(Color)[1],
+      ColorRankOriginal = unique(ColorRankOriginal)[1],
       .groups = "drop"
     )
 
@@ -135,7 +161,9 @@ make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
     mutate(
       GeneLabel = ifelse(is.na(GeneLabel), "", GeneLabel),
       GeneCount = ifelse(is.na(GeneCount), 0, GeneCount),
-      Color = color_order[ColorRank],
+      DisplayLineCount = vapply(GeneLabel, count_display_lines, numeric(1)),
+      Color = color_lookup$Color[match(ColorRank, color_lookup$ColorRank)],
+      ColorRankOriginal = color_lookup$ColorRankOriginal[match(ColorRank, color_lookup$ColorRank)],
       GroupIndex = as.numeric(Group),
       xmin = (ColorRank - 1) * cell_width,
       xmax = ColorRank * cell_width,
@@ -145,7 +173,10 @@ make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
   row_heights <- cell_df %>%
     group_by(Group) %>%
     summarise(
-      RowHeight = max(cell_height_min, max(GeneCount, na.rm = TRUE) * gene_line_height + gene_cell_padding),
+      RowHeight = max(
+        cell_height_min,
+        max(DisplayLineCount, na.rm = TRUE) * gene_line_height + gene_cell_padding
+      ),
       .groups = "drop"
     ) %>%
     mutate(
@@ -162,15 +193,15 @@ make_gene_table_data <- function(gene_sets, gene_colors, color_order) {
       ymid = (ymin + ymax) / 2
     )
 
-  group_axis <- row_heights %>%
-    distinct(Group, GroupY)
-
-  list(cell_df = cell_df, gene_df = df, group_axis = group_axis)
+  list(
+    cell_df = cell_df,
+    gene_df = df,
+    group_axis = row_heights %>% distinct(Group, GroupY),
+    color_lookup = color_lookup
+  )
 }
 
-make_header_data <- function(gene_df, gene_line_df, color_order) {
-  color_order <- toupper(color_order)
-
+make_header_data <- function(gene_df, gene_line_df, color_lookup) {
   line_joined <- gene_df %>%
     left_join(gene_line_df, by = "Gene") %>%
     filter(!is.na(D0), !is.na(D2), !is.na(D7))
@@ -184,16 +215,12 @@ make_header_data <- function(gene_df, gene_line_df, color_order) {
       .groups = "drop"
     )
 
-  header_boxes <- data.frame(
-    ColorRank = seq_along(color_order),
-    Color = color_order,
-    xmin = (seq_along(color_order) - 1) * cell_width,
-    xmax = seq_along(color_order) * cell_width,
-    ymin = 0,
-    ymax = header_height,
-    stringsAsFactors = FALSE
-  ) %>%
+  header_boxes <- color_lookup %>%
     mutate(
+      xmin = (ColorRank - 1) * cell_width,
+      xmax = ColorRank * cell_width,
+      ymin = 0,
+      ymax = header_height,
       xmid = (xmin + xmax) / 2,
       ymid = (ymin + ymax) / 2
     )
@@ -201,12 +228,10 @@ make_header_data <- function(gene_df, gene_line_df, color_order) {
   header_lines <- bind_rows(lapply(seq_len(nrow(header_boxes)), function(i) {
     box <- header_boxes[i, ]
     vals_row <- header_summary %>% filter(ColorRank == box$ColorRank)
-
     if (nrow(vals_row) == 0) return(NULL)
 
     vals <- c(vals_row$D0, vals_row$D2, vals_row$D7)
     times <- c(0, 2, 7)
-
     vmin <- min(vals)
     vmax <- max(vals)
 
@@ -221,9 +246,6 @@ make_header_data <- function(gene_df, gene_line_df, color_order) {
 
     data.frame(
       ColorRank = box$ColorRank,
-      Time = c("D0", "D2", "D7"),
-      TimeNum = times,
-      Value = vals,
       x = box$xmin + 0.15 * (box$xmax - box$xmin) +
         (times / 7) * 0.70 * (box$xmax - box$xmin),
       y = y,
@@ -235,35 +257,39 @@ make_header_data <- function(gene_df, gene_line_df, color_order) {
   header_sig <- bind_rows(lapply(seq_len(nrow(header_boxes)), function(i) {
     box <- header_boxes[i, ]
 
-    sig_row <- line_joined %>%
+    sig_rows <- line_joined %>%
       filter(ColorRank == box$ColorRank, !is.na(Significance), Significance != "") %>%
-      count(Significance, sort = TRUE) %>%
-      slice(1)
+      count(Significance, name = "N") %>%
+      arrange(Significance)
 
-    if (nrow(sig_row) == 0) return(NULL)
+    if (nrow(sig_rows) == 0) return(NULL)
 
-    sig <- sig_row$Significance[1]
+    bind_rows(lapply(seq_len(nrow(sig_rows)), function(j) {
+      sig <- sig_rows$Significance[j]
+      n_stars <- sig_rows$N[j]
 
-    if (sig == "D7_D0") {
-      t_pos <- 2
-    } else {
-      pair <- strsplit(sig, "_")[[1]]
-      times <- c(D0 = 0, D2 = 2, D7 = 7)
-      if (length(pair) != 2 || !all(pair %in% names(times))) return(NULL)
-      t_pos <- mean(times[pair])
-    }
+      if (sig == "D7_D0") {
+        t_pos <- 2
+      } else {
+        pair <- strsplit(sig, "_")[[1]]
+        times_named <- c(D0 = 0, D2 = 2, D7 = 7)
+        if (length(pair) != 2 || !all(pair %in% names(times_named))) return(NULL)
+        t_pos <- mean(times_named[pair])
+      }
 
-    x_pos <- box$xmin + 0.15 * (box$xmax - box$xmin) +
-      (t_pos / 7) * 0.70 * (box$xmax - box$xmin)
+      x_pos <- box$xmin + 0.15 * (box$xmax - box$xmin) +
+        (t_pos / 7) * 0.70 * (box$xmax - box$xmin)
 
-    y_pos <- box$ymin + 0.30 * (box$ymax - box$ymin)
+      y_pos <- box$ymin + (0.24 + (j - 1) * 0.13) * (box$ymax - box$ymin)
 
-    data.frame(
-      ColorRank = box$ColorRank,
-      sig_x = x_pos,
-      sig_y = y_pos,
-      stringsAsFactors = FALSE
-    )
+      data.frame(
+        ColorRank = box$ColorRank,
+        sig_x = x_pos,
+        sig_y = y_pos,
+        label = paste(rep("*", n_stars), collapse = ""),
+        stringsAsFactors = FALSE
+      )
+    }))
   }))
 
   list(
@@ -289,11 +315,22 @@ table_data <- make_gene_table_data(gene_sets_all, gene_colors, color_order)
 cell_df <- table_data$cell_df
 gene_df <- table_data$gene_df
 group_axis <- table_data$group_axis
+color_lookup <- table_data$color_lookup
 
-header_data <- make_header_data(gene_df, gene_lines, color_order)
+header_data <- make_header_data(gene_df, gene_lines, color_lookup)
 header_boxes <- header_data$header_boxes
 header_lines <- header_data$header_lines
 header_sig <- header_data$header_sig
+
+plot_height <- max(
+  8,
+  1 + max(cell_df$ymax, na.rm = TRUE) * 0.55
+)
+
+plot_width <- max(
+  8,
+  nrow(color_lookup) * 1.15
+)
 
 p <- ggplot() +
 
@@ -314,7 +351,7 @@ p <- ggplot() +
 
   geom_text(
     data = header_sig,
-    aes(x = sig_x, y = sig_y, label = "*"),
+    aes(x = sig_x, y = sig_y, label = label),
     color = "black",
     fontface = "bold",
     size = 4,
@@ -333,14 +370,14 @@ p <- ggplot() +
     data = cell_df,
     aes(x = xmid, y = ymid, label = GeneLabel),
     color = "black",
-    size = 2.1,
+    size = gene_text_size,
     lineheight = 0.9
   ) +
 
   scale_fill_identity() +
 
   scale_x_continuous(
-    limits = c(0, length(color_order) * cell_width),
+    limits = c(0, nrow(color_lookup) * cell_width),
     expand = c(0, 0),
     breaks = NULL
   ) +
@@ -350,6 +387,8 @@ p <- ggplot() +
     labels = as.character(group_axis$Group),
     expand = c(0.005, 0.005)
   ) +
+
+  coord_fixed(ratio = 1) +
 
   labs(
     title = "All Days",
@@ -371,7 +410,7 @@ p <- ggplot() +
     axis.line = element_blank()
   )
 
-ggsave(output_png, p, width = 16, height = 12, dpi = 300)
-ggsave(output_pdf, p, width = 16, height = 12)
+ggsave(output_png, p, width = plot_width, height = plot_height, dpi = 300)
+ggsave(output_pdf, p, width = plot_width, height = plot_height)
 
 message("Done: created ", output_png, " and ", output_pdf)
