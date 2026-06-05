@@ -1,3 +1,74 @@
+make_plot_data <- function(gene_sets, gene_colors, color_order, max_boxes_per_row = 10) {
+  color_order <- toupper(color_order)
+
+  df <- bind_rows(lapply(names(gene_sets), function(group) {
+    data.frame(
+      Group = group,
+      Gene = gene_sets[[group]],
+      stringsAsFactors = FALSE
+    )
+  }))
+
+  df$Color <- gene_colors[df$Gene]
+  df$Color[is.na(df$Color)] <- "#999999"
+
+  df$ColorRank <- match(toupper(df$Color), color_order)
+  df$ColorRank[is.na(df$ColorRank)] <- length(color_order) + 1
+
+  df <- df %>%
+    group_by(Group) %>%
+    mutate(GeneCount = n()) %>%
+    arrange(ColorRank, Gene, .by_group = TRUE) %>%
+    mutate(
+      BoxNumber = row_number(),
+      WrapCol = ((BoxNumber - 1) %% max_boxes_per_row) + 1,
+      WrapRow = floor((BoxNumber - 1) / max_boxes_per_row) + 1
+    ) %>%
+    ungroup()
+
+  group_order <- df %>%
+    distinct(Group, GeneCount) %>%
+    arrange(desc(GeneCount)) %>%
+    pull(Group)
+
+  df <- df %>%
+    mutate(Group = factor(Group, levels = group_order))
+
+  group_layout <- df %>%
+    group_by(Group) %>%
+    summarise(
+      NumWrapRows = max(WrapRow),
+      .groups = "drop"
+    ) %>%
+    arrange(Group) %>%
+    mutate(
+      GroupStartY = lag(cumsum(NumWrapRows + 0.6), default = 0),
+      GroupY = GroupStartY + NumWrapRows / 2
+    )
+
+  label_height <- 0.24
+
+  df <- df %>%
+    left_join(group_layout, by = "Group") %>%
+    mutate(
+      xmin = WrapCol - 1,
+      xmax = WrapCol,
+
+      ymin = GroupStartY + WrapRow - 1,
+      ymax = GroupStartY + WrapRow,
+
+      box_ymin = ymin,
+      box_ymax = ymax - label_height,
+
+      label_ymin = ymax - label_height,
+      label_ymax = ymax,
+      label_ymid = (label_ymin + label_ymax) / 2
+    )
+
+  df
+}
+
+
 library(ggplot2)
 library(dplyr)
 
