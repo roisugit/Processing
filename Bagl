@@ -1,0 +1,113 @@
+If you're referring to the BAGEL4 bioinformatics tool for mining RiPPs and bacteriocins, there is no official Conda/Bioconda package for BAGEL4. The developers distribute it as a standalone Perl application with several external dependencies. 
+
+1. Create a Conda environment
+
+You can still use Conda to manage most dependencies:
+
+conda create -n bagel4 \
+    perl \
+    hmmer \
+    blast \
+    glimmerhmm \
+    python=3.10 \
+    -c conda-forge -c bioconda
+
+conda activate bagel4
+
+Some BAGEL4 dependencies (such as PfamScan and its databases) may require manual installation. 
+
+2. Download BAGEL4
+
+git clone https://github.com/annejong/BAGEL4.git
+cd BAGEL4
+
+or download the release archive from the repository. 
+
+3. Configure BAGEL4
+
+Edit:
+
+nano bagel4.conf
+
+Update paths to:
+
+HMMER (hmmsearch)
+
+BLAST
+
+Glimmer
+
+Pfam databases
+
+Output directories
+
+
+The README notes that bagel4.conf must be adapted to your system before running. 
+
+4. Set the Perl library path
+
+BAGEL4 ships with Perl modules in its lib directory:
+
+export PERL5LIB=$(pwd)/lib:$PERL5LIB
+
+The project documentation specifically requires adding the BAGEL4 library to PERL5LIB. 
+
+5. Install databases
+
+BAGEL4 requires:
+
+Pfam-A HMM database
+
+Pfam FASTA database
+
+Optional UniRef database
+
+
+After downloading Pfam:
+
+gunzip Pfam*.gz
+hmmpress Pfam-A.hmm
+makeblastdb -in Pfam-A.fasta -dbtype prot
+
+(or formatdb on older BLAST installations). 
+
+6. Run BAGEL4
+
+For a directory of FASTA genomes:
+
+perl bagel4_wrapper.pl \
+    -s my_session \
+    -i genomes/
+
+Common options include:
+
+-s   session/output directory
+-i   input FASTA folder or zip file
+-r   filename regex
+
+The wrapper recursively processes FASTA files and creates a results session directory. 
+
+Example
+
+conda activate bagel4
+
+export PERL5LIB=/path/to/BAGEL4/lib:$PERL5LIB
+
+cd /path/to/BAGEL4
+
+perl bagel4_wrapper.pl \
+    -s results \
+    -i genomes/
+
+Troubleshooting
+
+"Can't locate module" → PERL5LIB is not set correctly.
+
+Pfam errors → download and index the Pfam databases.
+
+MOODS folder errors → create the symbolic link described in the README. Several users have reported setup issues related to missing MOODS files. 
+
+Large projects (>40 genomes) → the BAGEL4 developers recommend using the standalone Linux version rather than the public web server. 
+
+
+If you're on Linux and tell me your distribution (Ubuntu, Rocky, CentOS, etc.), I can give you a complete Conda-based installation script that installs all available dependencies and shows exactly how to configure bagel4.conf.
