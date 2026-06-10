@@ -1,0 +1,151 @@
+install.packages(c("tidyverse", "rstatix", "ggpubr"))
+
+#!/usr/bin/env Rscript
+
+# Usage:
+# Rscript cfu_boxplots_stats.R input.tsv
+
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+
+args <- commandArgs(trailingOnly = TRUE)
+input_file <- args[1]
+
+df <- read_tsv(input_file, col_names = FALSE)
+
+colnames(df) <- c("Group", "Replicate", "Timepoint", "CFU")
+
+df <- df %>%
+  mutate(
+    Group = as.factor(Group),
+    Replicate = as.factor(Replicate),
+    Timepoint = as.factor(Timepoint),
+    CFU = as.numeric(CFU),
+    log10_CFU = log10(CFU + 1)
+  )
+
+# -----------------------------
+# Boxplot: CFU by group, faceted by timepoint
+# -----------------------------
+
+p1 <- ggplot(df, aes(x = Group, y = log10_CFU, fill = Group)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.8) +
+  facet_wrap(~ Timepoint) +
+  theme_bw() +
+  labs(
+    title = "CFU counts by group and timepoint",
+    x = "Group",
+    y = "log10(CFU + 1)"
+  ) +
+  theme(legend.position = "none")
+
+ggsave("boxplot_groups_by_timepoint.pdf", p1, width = 10, height = 6)
+
+# -----------------------------
+# Boxplot: CFU by timepoint, faceted by group
+# -----------------------------
+
+p2 <- ggplot(df, aes(x = Timepoint, y = log10_CFU, fill = Timepoint)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.8) +
+  facet_wrap(~ Group) +
+  theme_bw() +
+  labs(
+    title = "CFU counts by timepoint and group",
+    x = "Timepoint",
+    y = "log10(CFU + 1)"
+  ) +
+  theme(legend.position = "none")
+
+ggsave("boxplot_timepoints_by_group.pdf", p2, width = 10, height = 6)
+
+# -----------------------------
+# Overall model
+# Tests effects of Group, Timepoint, and interaction
+# -----------------------------
+
+overall_anova <- df %>%
+  anova_test(log10_CFU ~ Group * Timepoint)
+
+write_csv(as.data.frame(overall_anova), "overall_two_way_anova.csv")
+
+# -----------------------------
+# Pairwise group comparisons within each timepoint
+# -----------------------------
+
+group_tests <- df %>%
+  group_by(Timepoint) %>%
+  pairwise_t_test(
+    log10_CFU ~ Group,
+    p.adjust.method = "BH"
+  )
+
+write_csv(group_tests, "pairwise_groups_within_timepoints.csv")
+
+# -----------------------------
+# Pairwise timepoint comparisons within each group
+# -----------------------------
+
+timepoint_tests <- df %>%
+  group_by(Group) %>%
+  pairwise_t_test(
+    log10_CFU ~ Timepoint,
+    p.adjust.method = "BH"
+  )
+
+write_csv(timepoint_tests, "pairwise_timepoints_within_groups.csv")
+
+# -----------------------------
+# Nonparametric alternatives
+# Use these if data are not normally distributed
+# -----------------------------
+
+group_tests_wilcox <- df %>%
+  group_by(Timepoint) %>%
+  pairwise_wilcox_test(
+    log10_CFU ~ Group,
+    p.adjust.method = "BH"
+  )
+
+write_csv(group_tests_wilcox, "pairwise_groups_within_timepoints_wilcox.csv")
+
+timepoint_tests_wilcox <- df %>%
+  group_by(Group) %>%
+  pairwise_wilcox_test(
+    log10_CFU ~ Timepoint,
+    p.adjust.method = "BH"
+  )
+
+write_csv(timepoint_tests_wilcox, "pairwise_timepoints_within_groups_wilcox.csv")
+
+# -----------------------------
+# Save summary statistics
+# -----------------------------
+
+summary_stats <- df %>%
+  group_by(Group, Timepoint) %>%
+  summarise(
+    n = n(),
+    mean_CFU = mean(CFU, na.rm = TRUE),
+    median_CFU = median(CFU, na.rm = TRUE),
+    sd_CFU = sd(CFU, na.rm = TRUE),
+    mean_log10_CFU = mean(log10_CFU, na.rm = TRUE),
+    median_log10_CFU = median(log10_CFU, na.rm = TRUE),
+    sd_log10_CFU = sd(log10_CFU, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+write_csv(summary_stats, "summary_statistics.csv")
+
+message("Done.")
+message("Files created:")
+message("boxplot_groups_by_timepoint.pdf")
+message("boxplot_timepoints_by_group.pdf")
+message("overall_two_way_anova.csv")
+message("pairwise_groups_within_timepoints.csv")
+message("pairwise_timepoints_within_groups.csv")
+message("pairwise_groups_within_timepoints_wilcox.csv")
+message("pairwise_timepoints_within_groups_wilcox.csv")
+message("summary_statistics.csv")
