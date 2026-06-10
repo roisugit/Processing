@@ -1,0 +1,33 @@
+Add this after you create df and log10_CFU:
+
+model <- aov(log10_CFU ~ Group * Timepoint, data = df)
+
+res <- residuals(model)
+
+Then you can check residual normality:
+
+pdf("residual_diagnostics.pdf")
+
+qqnorm(res)
+qqline(res, col = "red")
+
+hist(res, breaks = 20, main = "Histogram of residuals", xlab = "Residuals")
+
+plot(model, which = 1)
+
+dev.off()
+
+And run Shapiro-Wilk:
+
+shapiro_result <- shapiro.test(res)
+
+write.csv(
+  data.frame(
+    W = shapiro_result$statistic,
+    p_value = shapiro_result$p.value
+  ),
+  "shapiro_residual_normality.csv",
+  row.names = FALSE
+)
+
+So in your script, put it before the pairwise tests or near the ANOVA section.
