@@ -1,0 +1,43 @@
+import requests
+import pandas as pd
+
+BASE = "https://mediadive.dsmz.de/rest"
+
+# DSM collection number
+dsm_number = 63
+
+url = f"{BASE}/strain/{dsm_number}"
+r = requests.get(url, timeout=30)
+r.raise_for_status()
+
+data = r.json()
+
+rows = []
+
+# MediaDive strain response includes media/growth data;
+# this handles common JSON shapes defensively.
+media_items = (
+    data.get("media")
+    or data.get("media_list")
+    or data.get("growth_media")
+    or data.get("growthData")
+    or []
+)
+
+for m in media_items:
+    rows.append({
+        "dsm_number": dsm_number,
+        "strain_name": data.get("name") or data.get("full_name"),
+        "medium_id": m.get("id") or m.get("medium_id"),
+        "medium_name": m.get("name") or m.get("medium_name"),
+        "growth": m.get("growth"),
+        "temperature": m.get("temperature"),
+        "pH": m.get("pH") or m.get("ph"),
+        "raw": m
+    })
+
+df = pd.DataFrame(rows)
+df.to_csv("DSM63_mediadive_media.csv", index=False)
+
+print(df)
+print("Saved: DSM63_mediadive_media.csv")
