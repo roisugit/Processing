@@ -1,43 +1,57 @@
+import re
 import requests
 import pandas as pd
+from bs4 import BeautifulSoup
 
-BASE = "https://mediadive.dsmz.de/rest"
+DSM_IDS = ["DSM 63", "DSM 9266", "DSM 8827"]
 
-# DSM collection number
-dsm_number = 63
+def dsm_number(dsm_id):
+    return re.search(r"\d+", dsm_id).group()
 
-url = f"{BASE}/strain/{dsm_number}"
-r = requests.get(url, timeout=30)
-r.raise_for_status()
+def get_dsmz_culture_page(dsm_id):
+    n = dsm_number(dsm_id)
+    url = f"https://www.dsmz.de/collection/catalogue/details/culture/DSM-{n}"
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    return url, r.text
 
-data = r.json()
+def extract_media_from_dsmz(html):
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text("\n", strip=True)
+
+    # Finds patterns like:
+    # Medium 1
+    # Medium 81
+    # DSMZ Medium 81
+    media_nums = sorted(set(re.findall(r"(?:DSMZ\s+)?Medium\s+(\d+[a-z]?)", text, flags=re.I)))
+
+    # Try to get organism name from page title / h1
+    organism = None
+    h1 = soup.find(["h1", "h2"])
+    if h1:
+        organism = h1.get_text(" ", strip=True)
+
+    return organism, media_nums
 
 rows = []
 
-# MediaDive strain response includes media/growth data;
-# this handles common JSON shapes defensively.
-media_items = (
-    data.get("media")
-    or data.get("media_list")
-    or data.get("growth_media")
-    or data.get("growthData")
-    or []
-)
+for dsm_id in DSM_IDS:
+    print(f"Processing {dsm_id}...")
+    page_url, html = get_dsmz_culture_page(dsm_id)
+    organism, media_nums = extract_media_from_dsmz(html)
 
-for m in media_items:
-    rows.append({
-        "dsm_number": dsm_number,
-        "strain_name": data.get("name") or data.get("full_name"),
-        "medium_id": m.get("id") or m.get("medium_id"),
-        "medium_name": m.get("name") or m.get("medium_name"),
-        "growth": m.get("growth"),
-        "temperature": m.get("temperature"),
-        "pH": m.get("pH") or m.get("ph"),
-        "raw": m
-    })
+    for medium_id in media_nums:
+        mediadive_url = f"https://mediadive.dsmz.de/medium/{medium_id}?ccno={dsm_id.replace(' ', '+')}"
+        rows.append({
+            "dsm_id": dsm_id,
+            "organism": organism,
+            "medium_id": medium_id,
+            "mediadive_url": mediadive_url,
+            "dsmz_url": page_url
+        })
 
 df = pd.DataFrame(rows)
-df.to_csv("DSM63_mediadive_media.csv", index=False)
+df.to_csv("dsm_strain_media_export.csv", index=False)
 
 print(df)
-print("Saved: DSM63_mediadive_media.csv")
+print("Saved: dsm_strain_media_export.csv")
